@@ -3,6 +3,7 @@ const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const { buildNewsSource } = require('./newsSource');
 const seenStore = require('./seenStore');
+const claudeChat = require('./claudeChat');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
@@ -45,7 +46,16 @@ async function checkForNews() {
 }
 
 bot.start((ctx) => ctx.reply('YoonSquads 봇에 연결되었습니다. /help 로 사용 가능한 명령어를 확인하세요.'));
-bot.help((ctx) => ctx.reply('사용 가능한 명령어:\n/start - 봇 시작\n/help - 도움말\n/news - 최신 뉴스 확인'));
+bot.help((ctx) => {
+  const chatLine = claudeChat.isEnabled()
+    ? '/reset - 대화 기록 초기화\n'
+    : '';
+  ctx.reply(
+    `사용 가능한 명령어:\n/start - 봇 시작\n/help - 도움말\n/news - 최신 뉴스 확인\n${chatLine}${
+      claudeChat.isEnabled() ? '\n일반 메시지를 보내면 Claude와 대화할 수 있습니다.' : ''
+    }`
+  );
+});
 
 bot.command('news', async (ctx) => {
   try {
@@ -60,6 +70,29 @@ bot.command('news', async (ctx) => {
     await ctx.reply('뉴스를 가져오는 중 오류가 발생했습니다.');
   }
 });
+
+if (claudeChat.isEnabled()) {
+  bot.command('reset', (ctx) => {
+    claudeChat.resetHistory(ctx.chat.id);
+    ctx.reply('대화 기록을 초기화했습니다.');
+  });
+
+  bot.on('text', async (ctx) => {
+    if (ctx.message.text.startsWith('/')) {
+      return;
+    }
+    try {
+      await ctx.sendChatAction('typing');
+      const answer = await claudeChat.reply(ctx.chat.id, ctx.message.text);
+      await ctx.reply(answer);
+    } catch (err) {
+      console.error('Claude chat failed:', err);
+      await ctx.reply('Claude와 대화하는 중 오류가 발생했습니다.');
+    }
+  });
+} else {
+  console.warn('ANTHROPIC_API_KEY is not set. Claude chat is disabled; only slash commands work.');
+}
 
 bot.catch((err, ctx) => {
   console.error(`Error while handling update ${ctx.update.update_id}:`, err);

@@ -7,6 +7,8 @@ YoonSquads 텔레그램 봇입니다.
 1. `.env.example`을 `.env`로 복사하고 값을 채웁니다.
    - `TELEGRAM_BOT_TOKEN`: BotFather에서 발급받은 봇 토큰
    - `TELEGRAM_CHAT_ID`: 뉴스 알림을 받을 채팅/채널 ID (비워두면 정기 알림은 비활성화되고 `/news` 명령만 동작합니다)
+   - `ANTHROPIC_API_KEY`: [Anthropic 콘솔](https://console.anthropic.com/)에서 발급받은 API 키. 설정하면 명령어가 아닌 일반 메시지를 Claude가 대화형으로 응답합니다. 비워두면 이 기능은 비활성화됩니다.
+   - `ANTHROPIC_MODEL`: 사용할 Claude 모델 (기본값: `claude-sonnet-4-5`)
    - `NEWS_SOURCE`: `google`(기본값, 키 불필요) / `rss` / `naver`
    - 구글 뉴스 키워드 검색 사용 시 (기본값): `NEWS_KEYWORDS` — 검색할 키워드를 콤마로 구분 (예: `정치,경제,시사`)
    - RSS 피드 그대로 사용 시: `RSS_FEED_URL` (기본값: 구글 뉴스 한국 전체 피드)
@@ -21,6 +23,7 @@ YoonSquads 텔레그램 봇입니다.
 - `/start`, `/help`: 기본 안내
 - `/news`: 최신 뉴스 5건을 즉시 조회
 - 10분마다 뉴스 소스를 확인해 새 기사를 `TELEGRAM_CHAT_ID`로 자동 전송 (중복 전송 방지)
+- `ANTHROPIC_API_KEY` 설정 시: 명령어가 아닌 일반 메시지를 보내면 Claude가 대화형으로 응답 (`/reset`으로 대화 기록 초기화)
 
 ## 뉴스 소스
 
