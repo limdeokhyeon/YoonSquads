@@ -70,10 +70,10 @@ console.log('YoonSquads bot is running.');
 console.log(`News source: ${newsSource.description}`);
 
 if (chatId) {
-  cron.schedule('*/30 * * * *', () => {
+  cron.schedule('*/10 * * * *', () => {
     checkForNews().catch((err) => console.error('Failed to check news feed:', err));
   });
-  console.log('News feed polling every 30 minutes.');
+  console.log('News feed polling every 10 minutes.');
 } else {
   console.warn('TELEGRAM_CHAT_ID is not set. Scheduled news alerts are disabled; /news command still works.');
 }
