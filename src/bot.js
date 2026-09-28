@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
-const { fetchLatestNews } = require('./newsFeed');
+const { buildNewsSource } = require('./newsSource');
 const seenStore = require('./seenStore');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -11,7 +11,14 @@ if (!token) {
 }
 
 const chatId = process.env.TELEGRAM_CHAT_ID;
-const feedUrl = process.env.RSS_FEED_URL || 'https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko';
+
+let newsSource;
+try {
+  newsSource = buildNewsSource();
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 const bot = new Telegraf(token);
 const seen = seenStore.load();
@@ -20,17 +27,13 @@ function formatNewsItem(item) {
   return `📰 ${item.title}\n${item.link}`;
 }
 
-async function checkForNews(ctx) {
-  const items = await fetchLatestNews(feedUrl);
+async function checkForNews() {
+  const items = await newsSource.fetchLatestNews(20);
   const freshItems = items.filter((item) => !seen.has(item.id)).reverse();
 
   freshItems.forEach((item) => seen.add(item.id));
   if (freshItems.length > 0) {
     seenStore.save(seen);
-  }
-
-  if (ctx) {
-    return freshItems;
   }
 
   if (!chatId) {
@@ -46,7 +49,7 @@ bot.help((ctx) => ctx.reply('사용 가능한 명령어:\n/start - 봇 시작\n/
 
 bot.command('news', async (ctx) => {
   try {
-    const items = await fetchLatestNews(feedUrl, 5);
+    const items = await newsSource.fetchLatestNews(5);
     if (items.length === 0) {
       await ctx.reply('가져올 수 있는 뉴스가 없습니다.');
       return;
@@ -64,12 +67,13 @@ bot.catch((err, ctx) => {
 
 bot.launch();
 console.log('YoonSquads bot is running.');
+console.log(`News source: ${newsSource.description}`);
 
 if (chatId) {
   cron.schedule('*/30 * * * *', () => {
     checkForNews().catch((err) => console.error('Failed to check news feed:', err));
   });
-  console.log(`News feed polling every 30 minutes from ${feedUrl}`);
+  console.log('News feed polling every 30 minutes.');
 } else {
   console.warn('TELEGRAM_CHAT_ID is not set. Scheduled news alerts are disabled; /news command still works.');
 }
