@@ -3,6 +3,7 @@ const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const { buildNewsSource } = require('./newsSource');
 const seenStore = require('./seenStore');
+const { getProxyAgent } = require('./proxyAgent');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
@@ -20,7 +21,8 @@ try {
   process.exit(1);
 }
 
-const bot = new Telegraf(token);
+const proxyAgent = getProxyAgent();
+const bot = new Telegraf(token, proxyAgent ? { telegram: { agent: proxyAgent } } : undefined);
 const seen = seenStore.load();
 
 function formatNewsItem(item) {

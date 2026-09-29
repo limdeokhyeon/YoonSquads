@@ -1,6 +1,8 @@
 const Parser = require('rss-parser');
+const { getProxyAgent } = require('./proxyAgent');
 
-const parser = new Parser();
+const proxyAgent = getProxyAgent();
+const parser = new Parser(proxyAgent ? { requestOptions: { agent: proxyAgent } } : {});
 
 async function fetchLatestNews(feedUrl, limit = 10) {
   const feed = await parser.parseURL(feedUrl);
