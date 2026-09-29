@@ -8,12 +8,12 @@ class InstagramError(RuntimeError):
 
 
 class InstagramClient:
-    """Instagram Graph API 콘텐츠 게시 (비즈니스/크리에이터 계정 전용)."""
+    """Instagram API with Instagram Login 콘텐츠 게시 (비즈니스/크리에이터 계정 전용)."""
 
     def __init__(self, ig_user_id: str, access_token: str, version: str = "v21.0"):
         self._ig_user_id = ig_user_id
         self._token = access_token
-        self._base = f"https://graph.facebook.com/{version}"
+        self._base = f"https://graph.instagram.com/{version}"
         self._http = httpx.AsyncClient(timeout=30)
 
     async def _request(self, method: str, path: str, **params) -> dict:

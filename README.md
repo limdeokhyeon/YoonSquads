@@ -5,8 +5,11 @@
 
 ## 준비물
 1. **텔레그램 봇**: [@BotFather](https://t.me/BotFather)에서 봇을 만들고 토큰 발급
-2. **인스타그램 비즈니스/크리에이터 계정** + 연결된 페이스북 페이지
-3. **Meta 앱** ([developers.facebook.com](https://developers.facebook.com)): `instagram_basic`, `instagram_content_publish`, `pages_show_list` 권한의 장기 액세스 토큰과 IG User ID
+2. **인스타그램 비즈니스/크리에이터 계정** (페이스북 페이지 연결은 필요 없음)
+3. **Meta 앱** ([developers.facebook.com](https://developers.facebook.com)): 이용 사례 `Instagram API` → `Instagram 로그인이 포함된 API 설정`
+   - `권한 및 기능`에서 `instagram_business_basic`, `instagram_business_content_publish` 추가
+   - `역할` 탭에서 인스타그램 계정을 Instagram 테스터로 등록하고, 인스타그램 앱에서 초대 수락
+   - 설정 2번 `계정 추가`로 액세스 토큰과 IG User ID 발급
 4. **외부에서 접근 가능한 주소**: 인스타그램 서버가 이미지를 URL로 가져가므로 `PUBLIC_BASE_URL`이 필요합니다 (서버 도메인, 또는 개발 중에는 ngrok/cloudflared 터널로 `MEDIA_PORT`를 노출)
 
 ## 실행
