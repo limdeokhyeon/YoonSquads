@@ -46,6 +46,11 @@ async function checkForNews() {
   }
 }
 
+bot.use((ctx, next) => {
+  console.log('Update received:', JSON.stringify(ctx.update));
+  return next();
+});
+
 bot.start((ctx) => ctx.reply('YoonSquads 봇에 연결되었습니다. /help 로 사용 가능한 명령어를 확인하세요.'));
 bot.help((ctx) => ctx.reply('사용 가능한 명령어:\n/start - 봇 시작\n/help - 도움말\n/news - 최신 뉴스 확인'));
 
@@ -67,7 +72,11 @@ bot.catch((err, ctx) => {
   console.error(`Error while handling update ${ctx.update.update_id}:`, err);
 });
 
-bot.launch();
+bot.launch().then(() => {
+  console.log('bot.launch() resolved.');
+}).catch((err) => {
+  console.error('bot.launch() failed:', err);
+});
 console.log('YoonSquads bot is running.');
 console.log(`News source: ${newsSource.description}`);
 
