@@ -14,6 +14,15 @@ if (!token) {
 
 const chatId = process.env.TELEGRAM_CHAT_ID;
 
+// Claude 대화는 API 비용이 들기 때문에 TELEGRAM_ALLOWED_USER_IDS 에 있는 사용자만 쓸 수 있다.
+const allowedUserIds = new Set(
+  (process.env.TELEGRAM_ALLOWED_USER_IDS || '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .map(Number)
+);
+
 let newsSource;
 try {
   newsSource = buildNewsSource();
@@ -82,13 +91,21 @@ try {
 console.log(instagramEnabled ? 'Instagram posting enabled.' : 'Instagram posting disabled (INSTAGRAM_* not set).');
 
 if (claudeChat.isEnabled()) {
+  if (allowedUserIds.size === 0) {
+    console.warn('TELEGRAM_ALLOWED_USER_IDS is not set. Claude chat will ignore everyone.');
+  }
+
   bot.command('reset', (ctx) => {
+    if (!allowedUserIds.has(ctx.from.id)) return;
     claudeChat.resetHistory(ctx.chat.id);
     ctx.reply('대화 기록을 초기화했습니다.');
   });
 
   bot.on('text', async (ctx) => {
     if (ctx.message.text.startsWith('/')) {
+      return;
+    }
+    if (!allowedUserIds.has(ctx.from.id)) {
       return;
     }
     try {
