@@ -13,7 +13,8 @@ import requests
 
 from .config import Config
 
-URL = "https://openapi.naver.com/v1/search/news.json"
+# 2026-07 이후 신규 키는 NAVER API HUB(네이버 클라우드 플랫폼)에서 발급되며 주소·헤더가 다르다.
+URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 
 
 @dataclass
@@ -34,13 +35,13 @@ def clean(text: str) -> str:
 def search_news(cfg: Config, keyword: str, limit: int = 10, http=requests) -> list[NewsItem]:
     resp = http.get(
         URL,
-        headers={"X-Naver-Client-Id": cfg.naver_client_id, "X-Naver-Client-Secret": cfg.naver_client_secret},
+        headers={"X-NCP-APIGW-API-KEY-ID": cfg.naver_client_id, "X-NCP-APIGW-API-KEY": cfg.naver_client_secret},
         params={"query": keyword, "display": limit, "sort": "date"},
         timeout=15,
     )
     resp.raise_for_status()
     return [
-        NewsItem(clean(i["title"]), clean(i["description"]), i.get("link") or i["originallink"], i["pubDate"])
+        NewsItem(clean(i["title"]), clean(i.get("description", "")), i.get("link") or i["originallink"], i.get("pubDate", ""))
         for i in resp.json().get("items", [])
     ]
 

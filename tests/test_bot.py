@@ -97,3 +97,23 @@ def test_render_cards(tmp_path):
         pytest.skip("한글 폰트 없음")
     paths = render_cards(NewsDraft("임신 초기 영양제 가이드", ["엽산 챙기기", "카페인 줄이기"], "c", [], "l"), str(tmp_path), font)
     assert all(os.path.getsize(p) > 1000 for p in paths)
+
+
+def test_search_news_uses_api_hub():
+    from insta_agent import news
+
+    seen = {}
+
+    class R:
+        def raise_for_status(self): pass
+        def json(self): return {"items": [{"title": "<b>A</b>", "description": "d", "link": "http://x", "pubDate": "p"}]}
+
+    class H:
+        def get(self, url, headers, params, timeout):
+            seen.update(url=url, headers=headers, params=params)
+            return R()
+
+    got = news.search_news(make_cfg(naver_client_id="id", naver_client_secret="sec"), "임신", http=H())
+    assert seen["url"] == "https://naverapihub.apigw.ntruss.com/search/v1/news"
+    assert seen["headers"] == {"X-NCP-APIGW-API-KEY-ID": "id", "X-NCP-APIGW-API-KEY": "sec"}
+    assert got[0].title == "A"
