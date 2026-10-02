@@ -1,4 +1,7 @@
 """SQLite 기반 예약 발행 큐."""
+
+from __future__ import annotations
+
 import json
 import sqlite3
 from dataclasses import dataclass

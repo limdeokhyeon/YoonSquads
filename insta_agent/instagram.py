@@ -2,6 +2,9 @@
 
 이미지는 공개 접근 가능한 URL이어야 한다(로컬 파일 직접 업로드 불가).
 """
+
+from __future__ import annotations
+
 import time
 
 import requests

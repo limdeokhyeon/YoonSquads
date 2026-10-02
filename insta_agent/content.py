@@ -1,4 +1,7 @@
 """Claude로 인스타그램 캡션·해시태그를 생성한다."""
+
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass
 

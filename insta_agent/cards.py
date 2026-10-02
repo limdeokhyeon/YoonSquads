@@ -1,4 +1,7 @@
 """카드뉴스 이미지(1080x1080)를 Pillow로 직접 그린다. 기사 사진은 쓰지 않는다."""
+
+from __future__ import annotations
+
 import os
 import textwrap
 

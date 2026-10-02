@@ -1,4 +1,7 @@
 """예약된 게시물을 발행하는 실행기."""
+
+from __future__ import annotations
+
 from .instagram import InstagramClient
 from .queue import Queue
 

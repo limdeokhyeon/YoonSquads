@@ -2,6 +2,9 @@
 
 본문은 가져오지 않는다. 저작권 때문에 제목과 검색 요약만 참고해 새로 쓴다.
 """
+
+from __future__ import annotations
+
 import html
 import re
 from dataclasses import asdict, dataclass

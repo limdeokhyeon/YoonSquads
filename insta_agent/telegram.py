@@ -1,4 +1,7 @@
 """텔레그램 Bot API 최소 클라이언트. 지정된 chat id의 요청만 처리한다."""
+
+from __future__ import annotations
+
 import json
 
 import requests

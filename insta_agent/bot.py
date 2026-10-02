@@ -1,4 +1,7 @@
 """뉴스 수집 → 텔레그램 검토 → 승인 시 예약 발행까지 잇는 오케스트레이터."""
+
+from __future__ import annotations
+
 import os
 import re
 import time

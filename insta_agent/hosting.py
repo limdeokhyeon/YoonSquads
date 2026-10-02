@@ -1,4 +1,7 @@
 """Graph API는 공개 URL만 받으므로, 카드 이미지를 imgbb에 올려 URL을 얻는다."""
+
+from __future__ import annotations
+
 import base64
 
 import requests
