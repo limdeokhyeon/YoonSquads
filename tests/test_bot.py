@@ -37,8 +37,9 @@ def test_next_slot_skips_taken_and_past():
 def test_collect_alternates_keywords_and_dedupes(monkeypatch):
     from insta_agent import news
 
-    def fake(cfg, kw, limit=10, http=None):
-        return [news.NewsItem(f"{kw}{i}", "s", f"http://{kw}{i}", "d") for i in range(3)]
+    def fake(cfg, kw, limit=30, http=None):
+        items = [news.NewsItem(f"{kw}{i}", "s", f"http://{kw}{i}", "d") for i in range(3)]
+        return items + [news.NewsItem("무관한 기사", "무관", "http://other", "d")]
 
     monkeypatch.setattr(news, "search_news", fake)
     got = collect(make_cfg(), seen={"http://a0"})

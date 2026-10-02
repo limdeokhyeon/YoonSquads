@@ -32,7 +32,7 @@ def clean(text: str) -> str:
     return html.unescape(re.sub(r"</?b>", "", text)).strip()
 
 
-def search_news(cfg: Config, keyword: str, limit: int = 10, http=requests) -> list[NewsItem]:
+def search_news(cfg: Config, keyword: str, limit: int = 30, http=requests) -> list[NewsItem]:
     resp = http.get(
         URL,
         headers={"X-NCP-APIGW-API-KEY-ID": cfg.naver_client_id, "X-NCP-APIGW-API-KEY": cfg.naver_client_secret},
@@ -48,7 +48,11 @@ def search_news(cfg: Config, keyword: str, limit: int = 10, http=requests) -> li
 
 def collect(cfg: Config, seen: set[str], http=requests) -> list[NewsItem]:
     """키워드별 최신 기사에서 아직 처리하지 않은 것을 번갈아 골라 daily_count개 반환."""
-    pools = [[i for i in search_news(cfg, k, http=http) if i.link not in seen] for k in cfg.news_keywords]
+    # 본문 어딘가에만 키워드가 있는 기사는 제외: 제목이나 요약에 키워드가 있어야 한다
+    pools = [
+        [i for i in search_news(cfg, k, http=http) if i.link not in seen and (k in i.title or k in i.summary)]
+        for k in cfg.news_keywords
+    ]
     picked, titles = [], set()
     while len(picked) < cfg.daily_count and any(pools):
         for pool in pools:
