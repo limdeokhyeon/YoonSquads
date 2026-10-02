@@ -27,3 +27,17 @@ python -m insta_agent.cli run             # 실제 발행
 
 ## 테스트
 `python -m pytest`
+
+## 뉴스 → 텔레그램 검토 → 자동 발행
+```bash
+python -m insta_agent.cli serve
+```
+상시 실행하면 다음을 처리합니다.
+1. 매일 `COLLECT_HOUR`시(KST)에 네이버 뉴스 API로 `NEWS_KEYWORDS` 기사 `DAILY_COUNT`건 수집 (텔레그램 `/collect`로 즉시 수집도 가능)
+2. Claude가 제목·검색요약만 보고 카드뉴스 문구와 캡션을 새로 작성 (본문 복사 없음, 출처 링크 자동 첨부)
+3. 텔레그램으로 카드 이미지 + 캡션 미리보기 전송 → ✅승인 / 🔄다시 쓰기 / ❌폐기
+   - 수정 요청은 `수정 3 더 짧게` 처럼 답장
+4. 승인하면 카드를 imgbb에 올려 공개 URL을 만들고 `POST_HOURS` 중 비어 있는 다음 시각에 예약 → 시각이 되면 자동 발행, 결과를 텔레그램으로 알림
+
+본인 chat id(`TELEGRAM_CHAT_ID`)가 아닌 사용자의 메시지·버튼은 무시합니다.
+추가 필요 키: `NAVER_CLIENT_ID/SECRET`, `IMGBB_API_KEY` (`.env.example` 참고).

@@ -38,11 +38,53 @@ def _row(r: sqlite3.Row) -> Post:
     )
 
 
+CANDIDATES = """
+CREATE TABLE IF NOT EXISTS candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    link TEXT NOT NULL UNIQUE,
+    item TEXT NOT NULL,
+    draft TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'proposed',   -- proposed | approved | rejected
+    post_id INTEGER
+)"""
+
+
 class Queue:
     def __init__(self, path: str):
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
         self.db.execute(SCHEMA)
+        self.db.execute(CANDIDATES)
+
+    # --- 뉴스 후보(텔레그램 검토 대기) ---
+    def seen_links(self) -> set[str]:
+        return {r["link"] for r in self.db.execute("SELECT link FROM candidates")}
+
+    def add_candidate(self, item: dict, draft: dict) -> int:
+        cur = self.db.execute(
+            "INSERT INTO candidates (link, item, draft) VALUES (?,?,?)",
+            (item["link"], json.dumps(item, ensure_ascii=False), json.dumps(draft, ensure_ascii=False)),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def get_candidate(self, cid: int) -> dict | None:
+        r = self.db.execute("SELECT * FROM candidates WHERE id=?", (cid,)).fetchone()
+        if not r:
+            return None
+        return {"id": r["id"], "item": json.loads(r["item"]), "draft": json.loads(r["draft"]), "status": r["status"]}
+
+    def update_candidate(self, cid: int, *, draft: dict | None = None, status: str | None = None, post_id: int | None = None) -> None:
+        if draft is not None:
+            self.db.execute("UPDATE candidates SET draft=? WHERE id=?", (json.dumps(draft, ensure_ascii=False), cid))
+        if status is not None:
+            self.db.execute("UPDATE candidates SET status=? WHERE id=?", (status, cid))
+        if post_id is not None:
+            self.db.execute("UPDATE candidates SET post_id=? WHERE id=?", (post_id, cid))
+        self.db.commit()
+
+    def pending_slots(self) -> list[datetime]:
+        return [p.scheduled_at for p in self.list("pending")]
 
     def add(self, caption: str, image_urls: list[str], when: datetime) -> int:
         if when.tzinfo is None:

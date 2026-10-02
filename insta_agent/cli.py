@@ -34,6 +34,7 @@ def main(argv=None) -> None:
     r.add_argument("--dry-run", action="store_true")
 
     sub.add_parser("list", help="큐 조회")
+    sub.add_parser("serve", help="텔레그램 봇 상시 실행 (뉴스 수집·승인·예약발행)")
 
     args = p.parse_args(argv)
     cfg = Config.load()
@@ -47,6 +48,9 @@ def main(argv=None) -> None:
     elif args.cmd == "run":
         for pid, result in run_due(Queue(cfg.db_path), InstagramClient(cfg), args.dry_run):
             print(f"#{pid}: {result}")
+    elif args.cmd == "serve":
+        from .bot import serve
+        serve(cfg)
     elif args.cmd == "list":
         for post in Queue(cfg.db_path).list():
             when = post.scheduled_at.astimezone(KST).strftime("%Y-%m-%d %H:%M")
