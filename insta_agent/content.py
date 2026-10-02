@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 
 import anthropic
@@ -47,20 +50,36 @@ def parse_draft(raw: str) -> Draft:
     return draft
 
 
+def complete(cfg: Config, system: str, user: str, max_tokens: int = 1500) -> str:
+    """API 키가 있으면 Anthropic API, 없으면 로그인된 Claude Code(`claude -p`)로 호출한다."""
+    if cfg.anthropic_api_key:
+        client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
+        msg = client.messages.create(
+            model=cfg.model, max_tokens=max_tokens, system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        return "".join(b.text for b in msg.content if b.type == "text")
+
+    claude = shutil.which("claude")
+    if not claude:
+        raise RuntimeError("ANTHROPIC_API_KEY가 없고 claude 명령도 찾지 못했습니다")
+    # 프로젝트 폴더(.env 등)를 읽지 못하도록 빈 임시 폴더에서 실행
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = subprocess.run(
+            [claude, "-p", f"{system}\n\n---\n{user}"],
+            capture_output=True, text=True, timeout=240, cwd=tmp,
+        )
+    if proc.returncode != 0:
+        raise RuntimeError(f"claude -p 실패: {(proc.stderr or proc.stdout)[:300]}")
+    return proc.stdout
+
+
 def generate_draft(cfg: Config, topic: str, extra: str = "") -> Draft:
-    client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
-    msg = client.messages.create(
-        model=cfg.model,
-        max_tokens=1500,
-        system=SYSTEM.format(limit=CAPTION_LIMIT - 400),
-        messages=[
-            {
-                "role": "user",
-                "content": f"주제: {topic}\n브랜드 톤: {cfg.brand_voice}\n추가 요청: {extra or '없음'}",
-            }
-        ],
+    text = complete(
+        cfg,
+        SYSTEM.format(limit=CAPTION_LIMIT - 400),
+        f"주제: {topic}\n브랜드 톤: {cfg.brand_voice}\n추가 요청: {extra or '없음'}",
     )
-    text = "".join(b.text for b in msg.content if b.type == "text")
     return parse_draft(text)
 
 
@@ -102,18 +121,10 @@ def parse_news_draft(raw: str, source_link: str) -> NewsDraft:
 
 
 def generate_news_draft(cfg: Config, item: dict, feedback: str = "") -> NewsDraft:
-    client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
-    msg = client.messages.create(
-        model=cfg.model,
-        max_tokens=1500,
-        system=NEWS_SYSTEM,
-        messages=[
-            {
-                "role": "user",
-                "content": f"제목: {item['title']}\n검색 요약: {item['summary']}\n"
-                f"브랜드 톤: {cfg.brand_voice}\n수정 요청: {feedback or '없음'}",
-            }
-        ],
+    text = complete(
+        cfg,
+        NEWS_SYSTEM,
+        f"제목: {item['title']}\n검색 요약: {item['summary']}\n"
+        f"브랜드 톤: {cfg.brand_voice}\n수정 요청: {feedback or '없음'}",
     )
-    text = "".join(b.text for b in msg.content if b.type == "text")
     return parse_news_draft(text, item["link"])

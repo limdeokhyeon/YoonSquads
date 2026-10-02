@@ -118,3 +118,30 @@ def test_search_news_uses_api_hub():
     assert seen["url"] == "https://naverapihub.apigw.ntruss.com/search/v1/news"
     assert seen["headers"] == {"X-NCP-APIGW-API-KEY-ID": "id", "X-NCP-APIGW-API-KEY": "sec"}
     assert got[0].title == "A"
+
+
+def test_complete_falls_back_to_claude_cli(monkeypatch):
+    from insta_agent import content
+
+    calls = {}
+
+    class P:
+        returncode, stdout, stderr = 0, '{"headline":"h","bullets":["b"],"caption":"c","hashtags":[]}', ""
+
+    def fake_run(cmd, **kw):
+        calls["cmd"], calls["cwd"] = cmd, kw["cwd"]
+        return P()
+
+    monkeypatch.setattr(content.shutil, "which", lambda n: "/usr/bin/claude")
+    monkeypatch.setattr(content.subprocess, "run", fake_run)
+    d = content.generate_news_draft(make_cfg(anthropic_api_key=""), {"title": "t", "summary": "s", "link": "http://l"})
+    assert d.headline == "h" and calls["cmd"][:2] == ["/usr/bin/claude", "-p"]
+    assert "yoonsquads" not in calls["cwd"]  # 프로젝트 폴더가 아닌 임시 폴더
+
+
+def test_complete_without_key_or_cli_errors(monkeypatch):
+    from insta_agent import content
+
+    monkeypatch.setattr(content.shutil, "which", lambda n: None)
+    with pytest.raises(RuntimeError):
+        content.complete(make_cfg(anthropic_api_key=""), "s", "u")

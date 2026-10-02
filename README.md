@@ -41,3 +41,8 @@ python -m insta_agent.cli serve
 
 본인 chat id(`TELEGRAM_CHAT_ID`)가 아닌 사용자의 메시지·버튼은 무시합니다.
 추가 필요 키: `NAVER_CLIENT_ID/SECRET`(NAVER API HUB의 Client ID/Secret), `IMGBB_API_KEY` (`.env.example` 참고).
+
+## API 키 없이 쓰기 (Claude 구독)
+`ANTHROPIC_API_KEY`를 비워 두면 서버에 설치·로그인된 Claude Code(`claude -p`)로 문구를 생성합니다.
+`.env`가 있는 프로젝트 폴더가 아닌 빈 임시 폴더에서 실행해 키가 노출되지 않게 했습니다.
+구독 사용량 한도를 공유하므로 하루 건수가 많으면 API 키 방식이 안정적입니다.
