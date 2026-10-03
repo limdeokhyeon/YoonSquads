@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="",
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", card_footer="f",
     )
     base.update(kw)
     return Config(**base)

@@ -47,7 +47,7 @@ def _preview_text(cid: int, item: dict, draft: NewsDraft) -> str:
 
 
 def _send_review(cfg: Config, tg: Telegram, cid: int, item: dict, draft: NewsDraft) -> None:
-    paths = render_cards(draft, os.path.join(CARD_DIR, str(cid)), cfg.font_path)
+    paths = render_cards(draft, os.path.join(CARD_DIR, str(cid)), cfg.font_path, cfg.card_footer)
     tg.send_photo(paths[0], f"#{cid} 표지")
     tg.send_photo(paths[1], f"#{cid} 본문")
     tg.send(
@@ -77,7 +77,7 @@ def approve(cfg: Config, queue: Queue, tg: Telegram, cid: int) -> str:
     if not cand or cand["status"] != "proposed":
         return "이미 처리된 후보입니다"
     draft = _draft(cand["draft"])
-    paths = render_cards(draft, os.path.join(CARD_DIR, str(cid)), cfg.font_path)
+    paths = render_cards(draft, os.path.join(CARD_DIR, str(cid)), cfg.font_path, cfg.card_footer)
     urls = [upload_image(cfg, p) for p in paths]
     slot = next_slot(cfg.post_hours, queue.pending_slots())
     post_id = queue.add(draft.full_text(), urls, slot)

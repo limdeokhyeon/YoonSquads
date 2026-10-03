@@ -33,7 +33,7 @@ python -m insta_agent.cli run             # 실제 발행
 python -m insta_agent.cli serve
 ```
 상시 실행하면 다음을 처리합니다.
-1. 매일 `COLLECT_HOUR`시(KST)에 네이버 API HUB 뉴스 검색으로 `NEWS_KEYWORDS` 기사 `DAILY_COUNT`건 수집 (텔레그램 `/collect`로 즉시 수집도 가능)
+1. 매일 `COLLECT_HOUR`시(KST)에 네이버 API HUB 뉴스 검색으로 `NEWS_KEYWORDS`(기본 정치,경제,시사) 기사 `DAILY_COUNT`건 수집 (텔레그램 `/collect`로 즉시 수집도 가능)
 2. Claude가 제목·검색요약만 보고 카드뉴스 문구와 캡션을 새로 작성 (본문 복사 없음, 출처 링크 자동 첨부)
 3. 텔레그램으로 카드 이미지 + 캡션 미리보기 전송 → ✅승인 / 🔄다시 쓰기 / ❌폐기
    - 수정 요청은 `수정 3 더 짧게` 처럼 답장

@@ -40,7 +40,7 @@ def _canvas() -> tuple[Image.Image, ImageDraw.ImageDraw]:
     return img, d
 
 
-def render_cards(draft: NewsDraft, out_dir: str, font_path: str = "") -> list[str]:
+def render_cards(draft: NewsDraft, out_dir: str, font_path: str = "", footer: str = "") -> list[str]:
     """표지 1장 + 본문 1장. 저장한 파일 경로 목록을 반환."""
     font = find_font(font_path)
     os.makedirs(out_dir, exist_ok=True)
@@ -59,7 +59,8 @@ def render_cards(draft: NewsDraft, out_dir: str, font_path: str = "") -> list[st
         d.text((80, y), f"{n}", font=f, fill=ACCENT)
         d.multiline_text((140, y), text, font=f, fill=FG, spacing=14)
         y += 70 * (text.count("\n") + 1) + 70
-    d.text((80, SIZE - 100), "※ 본 콘텐츠는 참고용이며 전문가 상담을 대체하지 않습니다", font=ImageFont.truetype(font, 26), fill=SUB)
+    if footer:
+        d.text((80, SIZE - 100), footer, font=ImageFont.truetype(font, 26), fill=SUB)
     body = os.path.join(out_dir, "2_body.png")
     img.save(body)
     return [cover, body]
