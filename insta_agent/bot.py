@@ -133,7 +133,10 @@ def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None
 def serve(cfg: Config) -> None:
     """상시 실행: 텔레그램 응답 처리 + 매일 수집 + 예약 발행."""
     queue, tg, ig = Queue(cfg.db_path), Telegram(cfg.telegram_token, cfg.telegram_chat_id), InstagramClient(cfg)
-    offset, last_collect = None, None
+    offset = None
+    # 켤 때마다 후보가 쏟아지지 않도록, 이미 수집 시각이 지났으면 오늘 몫은 건너뛴다
+    now0 = datetime.now(KST)
+    last_collect = now0.date() if now0.hour >= cfg.collect_hour else None
     tg.send("🤖 봇이 시작되었습니다. /collect 로 지금 수집할 수 있어요.")
     while True:
         try:
