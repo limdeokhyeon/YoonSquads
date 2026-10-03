@@ -308,3 +308,21 @@ def test_maybe_refresh_token_schedule(monkeypatch, tmp_path):
     assert bot.maybe_refresh_token(q, ig, tg, now=t0 + timedelta(days=10)) is False  # 아직 이름
     assert bot.maybe_refresh_token(q, ig, tg, now=t0 + timedelta(days=31)) is True
     assert "IGAAnew" in (tmp_path / ".env").read_text()
+
+
+def test_publishing_limit_parses_quota():
+    from insta_agent.instagram import InstagramClient
+
+    class R:
+        status_code = 200
+        text = ""
+        def json(self): return {"data": [{"quota_usage": 2, "config": {"quota_total": 50, "quota_duration": 86400}}]}
+
+    class S:
+        def request(self, method, url, params, timeout):
+            assert url == "https://graph.instagram.com/v21.0/me/content_publishing_limit"
+            assert params["fields"] == "quota_usage,config"
+            return R()
+
+    c = InstagramClient(make_cfg(ig_user_id="", ig_access_token="IGAAx"), session=S())
+    assert c.publishing_limit() == {"quota_usage": 2, "quota_total": 50}

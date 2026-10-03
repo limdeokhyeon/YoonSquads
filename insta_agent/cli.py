@@ -37,6 +37,7 @@ def main(argv=None) -> None:
 
     sub.add_parser("list", help="큐 조회")
     sub.add_parser("ig-whoami", help="인스타 토큰이 유효한지, 어느 계정인지 확인")
+    sub.add_parser("ig-check", help="인스타 연결·게시 권한 점검 (실제로 글을 올리지는 않음)")
     sub.add_parser("ig-refresh", help="인스타 장기 토큰 연장 후 .env에 저장")
     sub.add_parser("serve", help="텔레그램 봇 상시 실행 (뉴스 수집·승인·예약발행)")
 
@@ -55,6 +56,16 @@ def main(argv=None) -> None:
     elif args.cmd == "ig-whoami":
         info = InstagramClient(cfg).whoami()
         print("연결 성공:", info)
+    elif args.cmd == "ig-check":
+        ig = InstagramClient(cfg)
+        info = ig.whoami()
+        print(f"1) 토큰 연결 OK — @{info.get('username')} (user_id {info.get('user_id') or ig.user})")
+        try:
+            lim = ig.publishing_limit()
+            print(f"2) 게시 권한 OK — 24시간 한도 {lim['quota_usage']}/{lim['quota_total']}건 사용")
+        except Exception as e:
+            print(f"2) 게시 권한 확인 실패: {e}")
+            print("   → Meta 앱의 Instagram 설정에서 'instagram_business_content_publish' 권한으로 토큰을 다시 발급하세요")
     elif args.cmd == "ig-refresh":
         from .config import update_env
         token, expires = InstagramClient(cfg).refresh_token()

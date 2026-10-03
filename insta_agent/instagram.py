@@ -37,6 +37,12 @@ class InstagramClient:
             return self._call("GET", "me", fields="user_id,username")
         return self._call("GET", self.user, fields="username")
 
+    def publishing_limit(self) -> dict:
+        """게시 권한 점검용(읽기 전용): 권한이 없으면 오류가 난다. 24시간 게시 한도 사용량도 보여 준다."""
+        data = self._call("GET", f"{self.user}/content_publishing_limit", fields="quota_usage,config")
+        item = (data.get("data") or [{}])[0]
+        return {"quota_usage": item.get("quota_usage"), "quota_total": (item.get("config") or {}).get("quota_total")}
+
     def refresh_token(self) -> tuple[str, int]:
         """장기 토큰(60일)을 연장한다. 발급 24시간 후부터 만료 전까지 가능. (새 토큰, 유효 초) 반환."""
         if self.host != "graph.instagram.com":
