@@ -86,6 +86,11 @@ class Queue:
             self.db.execute("UPDATE candidates SET post_id=? WHERE id=?", (post_id, cid))
         self.db.commit()
 
+    def reject_all_proposed(self) -> int:
+        cur = self.db.execute("UPDATE candidates SET status='rejected' WHERE status='proposed'")
+        self.db.commit()
+        return cur.rowcount
+
     def pending_slots(self) -> list[datetime]:
         return [p.scheduled_at for p in self.list("pending")]
 

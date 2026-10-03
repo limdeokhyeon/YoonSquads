@@ -124,8 +124,10 @@ def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None
             regenerate(cfg, queue, tg, int(m.group(1)), m.group(2).strip())
         elif text.startswith("/collect"):
             propose(cfg, queue, tg)
+        elif text.startswith("/clear"):
+            tg.send(f"🧹 검토 대기 중이던 후보 {queue.reject_all_proposed()}건을 모두 폐기했습니다")
         elif text.startswith(("/start", "/help")):
-            tg.send("명령어\n/collect — 지금 뉴스 수집\n수정 <번호> <요청> — 예) 수정 3 더 짧게\n버튼으로 승인/다시쓰기/폐기")
+            tg.send("명령어\n/collect — 지금 뉴스 수집\n/clear — 검토 대기 후보 모두 폐기\n수정 <번호> <요청> — 예) 수정 3 더 짧게\n버튼으로 승인/다시쓰기/폐기")
     except Exception as e:
         tg.send(f"⚠️ 처리 중 오류: {e}")
 

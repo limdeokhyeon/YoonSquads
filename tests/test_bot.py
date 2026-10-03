@@ -200,3 +200,15 @@ def test_overlap_triggers_rewrite(monkeypatch):
     monkeypatch.setattr(content, "complete", lambda cfg, s, u, max_tokens=1500: next(outputs))
     d = content.generate_news_draft(make_cfg(), {"title": "t", "summary": "s", "link": "l", "body": body})
     assert "나라 살림" in d.caption
+
+
+def test_clear_rejects_only_proposed():
+    q, tg = Queue(":memory:"), FakeTG()
+    a = q.add_candidate({"link": "a"}, {})
+    b = q.add_candidate({"link": "b"}, {})
+    q.update_candidate(b, status="approved")
+    class U(dict): pass
+    upd = {"message": {"text": "/clear", "chat": {"id": 1}, "from": {"id": 1}}}
+    bot.handle_update(make_cfg(), q, tg, upd)
+    assert q.get_candidate(a)["status"] == "rejected" and q.get_candidate(b)["status"] == "approved"
+    assert "1건" in tg.sent[-1]
