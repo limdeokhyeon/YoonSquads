@@ -30,6 +30,7 @@ class Config:
     imgbb_key: str
     font_path: str
     card_footer: str
+    fetch_body: bool
 
     @classmethod
     def load(cls) -> "Config":
@@ -52,5 +53,6 @@ class Config:
             post_hours=[int(h) for h in _list("POST_HOURS", "12,18,21")],
             imgbb_key=os.getenv("IMGBB_API_KEY", ""),
             font_path=os.getenv("FONT_PATH", ""),
+            fetch_body=os.getenv("FETCH_BODY", "false").lower() in ("1", "true", "yes"),
             card_footer=os.getenv("CARD_FOOTER", "※ 보도 내용을 요약한 것으로, 자세한 내용은 출처 기사를 확인하세요"),
         )

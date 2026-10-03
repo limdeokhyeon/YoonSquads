@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", card_footer="f",
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", card_footer="f", fetch_body=False,
     )
     base.update(kw)
     return Config(**base)
@@ -162,3 +162,41 @@ def test_get_updates_sends_long_poll_timeout():
     assert tg.get_updates(offset=5, timeout=25) == [{"update_id": 1}]
     assert sent["data"]["timeout"] == 25 and sent["data"]["offset"] == 5
     assert sent["timeout"] == 35 and sent["url"].endswith("/getUpdates")
+
+
+def test_extract_text_prefers_article_container():
+    from insta_agent.article import extract_text
+
+    html = "<html><body><div id='dic_area'>" + "본문 문장입니다. " * 30 + "</div><p>광고</p><script>x</script></body></html>"
+    assert extract_text(html).startswith("본문 문장입니다.")
+
+
+def test_fetch_body_respects_robots(monkeypatch):
+    from insta_agent import article
+
+    article._robots.clear()
+
+    class R:
+        def __init__(self, text, code=200): self.text, self.status_code = text, code
+        def raise_for_status(self): pass
+
+    class H:
+        def get(self, url, headers=None, timeout=None):
+            if url.endswith("robots.txt"):
+                return R("User-agent: *\nDisallow: /")
+            raise AssertionError("차단된 주소를 읽으면 안 됨")
+
+    assert article.fetch_body("http://blocked.example/a", http=H(), delay=0) == ""
+
+
+def test_overlap_triggers_rewrite(monkeypatch):
+    from insta_agent import content
+
+    body = "정부는 내년 예산안을 전년보다 크게 늘린 규모로 편성해 국회에 제출했다고 밝혔다 " * 2
+    outputs = iter([
+        '{"headline":"예산안","bullets":["b"],"caption":"정부는 내년 예산안을 전년보다 크게 늘린 규모로 편성해 국회에 제출했다고 밝혔다","hashtags":[]}',
+        '{"headline":"예산안","bullets":["b"],"caption":"내년 나라 살림 계획이 국회로 넘어갔다","hashtags":[]}',
+    ])
+    monkeypatch.setattr(content, "complete", lambda cfg, s, u, max_tokens=1500: next(outputs))
+    d = content.generate_news_draft(make_cfg(), {"title": "t", "summary": "s", "link": "l", "body": body})
+    assert "나라 살림" in d.caption

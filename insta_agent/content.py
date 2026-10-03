@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import anthropic
 
+from .article import longest_overlap
 from .config import Config
 
 CAPTION_LIMIT = 2200
@@ -87,6 +88,7 @@ NEWS_SYSTEM = """당신은 인스타그램 뉴스 카드 에디터입니다.
 기사의 제목과 검색 요약만 주어집니다. 이를 바탕으로 카드뉴스를 직접 새로 작성하세요.
 규칙:
 - 기사 문장을 그대로 옮기지 말고 자신의 표현으로 쓸 것. 주어진 정보에 없는 사실은 추가 금지
+- '본문 발췌'가 있으면 사실관계(누가·언제·무엇을·수치) 파악에만 쓰고, 문장은 어느 부분도 그대로 옮기지 말 것
 - headline: 표지 제목 28자 이내
 - bullets: 핵심 3개, 각 45자 이내
 - caption: 후크 한 줄 + 쉬운 해설 + 마지막에 행동 유도 한 줄 (출처는 시스템이 따로 붙이므로 쓰지 말 것)
@@ -121,11 +123,23 @@ def parse_news_draft(raw: str, source_link: str) -> NewsDraft:
     return NewsDraft(str(d["headline"]).strip(), bullets, base.caption, base.hashtags, source_link)
 
 
+OVERLAP_LIMIT = 25  # 원문과 연속 25자 이상 같으면 베낀 것으로 보고 다시 쓴다
+
+
 def generate_news_draft(cfg: Config, item: dict, feedback: str = "") -> NewsDraft:
-    text = complete(
-        cfg,
-        NEWS_SYSTEM,
-        f"제목: {item['title']}\n검색 요약: {item['summary']}\n"
-        f"브랜드 톤: {cfg.brand_voice}\n수정 요청: {feedback or '없음'}",
-    )
-    return parse_news_draft(text, item["link"])
+    body = item.get("body", "")
+
+    def run(fb: str) -> NewsDraft:
+        user = (
+            f"제목: {item['title']}\n검색 요약: {item['summary']}\n"
+            + (f"본문 발췌(참고용, 문장을 옮기지 말 것): {body}\n" if body else "")
+            + f"브랜드 톤: {cfg.brand_voice}\n수정 요청: {fb or '없음'}"
+        )
+        return parse_news_draft(complete(cfg, NEWS_SYSTEM, user), item["link"])
+
+    draft = run(feedback)
+    source = f"{item['summary']} {body}"
+    mine = " ".join([draft.headline, draft.caption, *draft.bullets])
+    if longest_overlap(mine, source) >= OVERLAP_LIMIT:
+        draft = run((feedback + " " if feedback else "") + "원문과 같은 표현이 있으니 모든 문장을 완전히 다른 표현으로 다시 써 줘")
+    return draft

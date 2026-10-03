@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 
 from .agent import run_due
+from .article import fetch_body
 from .cards import render_cards
 from .config import Config
 from .content import NewsDraft, generate_news_draft
@@ -61,9 +62,12 @@ def propose(cfg: Config, queue: Queue, tg: Telegram) -> int:
     sent = 0
     for item in items:
         try:
-            draft = generate_news_draft(cfg, item.to_dict())
-            cid = queue.add_candidate(item.to_dict(), asdict(draft))
-            _send_review(cfg, tg, cid, item.to_dict(), draft)
+            data = item.to_dict()
+            if cfg.fetch_body:
+                data["body"] = fetch_body(item.link)
+            draft = generate_news_draft(cfg, data)
+            cid = queue.add_candidate(data, asdict(draft))
+            _send_review(cfg, tg, cid, data, draft)
             sent += 1
         except Exception as e:
             tg.send(f"⚠️ 후보 생성 실패: {item.title[:40]}\n{e}")
