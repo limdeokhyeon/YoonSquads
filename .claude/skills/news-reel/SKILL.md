@@ -59,6 +59,13 @@ description: 뉴스 속보 사진/제목을 받아 인스타 릴스(1080x1920, 1
 - 사용자가 사진 문구·로고·팔로우 화면을 빼라고 하면 그 선호를 이후 작업에도 유지한다.
 - 키·토큰은 채팅에 받지 않는다.
 
+## 디자인 수정은 피그마로 (사용자 지시)
+- 영상·이미지의 **디자인을 고치거나 새로 꾸밀 때는 Figma 커넥터로 진행**한다 (`mcp__Figma__*`, 먼저 `ToolSearch`로 로드).
+- 순서: `whoami`로 연결·플랜 확인 → `get_figma_skill`로 `skill://figma/figma-use/SKILL.md`를 읽고 → `create_new_file`(design, 1080x1920 프레임) → `use_figma`로 요소 작성·수정 → 스크린샷으로 확인.
+- 단순히 문구·사진만 바꾸는 반복 제작은 기존대로 `make_reel.py`를 쓴다. 레이아웃·색·요소 같은 디자인 변경이 있으면 피그마를 쓴다.
+- 피그마에서 내보낸 이미지는 mp4로 만들 때 ffmpeg(`-loop 1 -t 10`)로 변환한다.
+- 연결이 안 되면 그 사실을 알리고, 캔바나 `make_reel.py`로 대신할지 묻는다.
+
 ## 참고
 - 폰트(나눔고딕)는 스크립트가 처음 실행할 때 내려받는다 (`scripts/.fonts`, 커밋 안 함).
 - 캔바로 꾸민 버전이 필요하면 Canva 커넥터 `create-design`(Instagram Story 1080x1920)으로 만들고 `export-design`(mp4 `vertical_1080p`, png)으로 내보낸다. 캔바 요소를 지운 자리에 그림자가 남으면 ffmpeg `delogo`로 지운다.
