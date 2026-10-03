@@ -145,3 +145,20 @@ def test_complete_without_key_or_cli_errors(monkeypatch):
     monkeypatch.setattr(content.shutil, "which", lambda n: None)
     with pytest.raises(RuntimeError):
         content.complete(make_cfg(anthropic_api_key=""), "s", "u")
+
+
+def test_get_updates_sends_long_poll_timeout():
+    sent = {}
+
+    class R:
+        def json(self): return {"ok": True, "result": [{"update_id": 1}]}
+
+    class H:
+        def post(self, url, data, timeout):
+            sent.update(url=url, data=data, timeout=timeout)
+            return R()
+
+    tg = Telegram("T", "1", http=H())
+    assert tg.get_updates(offset=5, timeout=25) == [{"update_id": 1}]
+    assert sent["data"]["timeout"] == 25 and sent["data"]["offset"] == 5
+    assert sent["timeout"] == 35 and sent["url"].endswith("/getUpdates")

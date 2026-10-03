@@ -13,8 +13,8 @@ class Telegram:
         self.base = f"https://api.telegram.org/bot{token}"
         self.http = http
 
-    def _call(self, method: str, timeout: int = 30, **data) -> dict:
-        resp = self.http.post(f"{self.base}/{method}", data=data, timeout=timeout)
+    def _call(self, method: str, http_timeout: int = 30, **data) -> dict:
+        resp = self.http.post(f"{self.base}/{method}", data=data, timeout=http_timeout)
         body = resp.json()
         if not body.get("ok"):
             raise RuntimeError(f"Telegram {method} 실패: {body.get('description')}")
@@ -44,7 +44,7 @@ class Telegram:
         data = {"timeout": timeout, "allowed_updates": json.dumps(["message", "callback_query"])}
         if offset is not None:
             data["offset"] = offset
-        return self._call("getUpdates", timeout=timeout + 10, **data)
+        return self._call("getUpdates", http_timeout=timeout + 10, **data)
 
     def is_owner(self, update: dict) -> bool:
         msg = update.get("message") or (update.get("callback_query") or {}).get("message") or {}
