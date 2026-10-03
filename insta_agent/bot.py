@@ -14,6 +14,7 @@ from .cards import render_cards
 from .config import Config, update_env
 from .content import NewsDraft, generate_news_draft
 from .hosting import upload_image
+from .images import generate_background
 from .instagram import InstagramClient
 from .news import collect, collect_breaking
 from .queue import Queue
@@ -47,10 +48,22 @@ def _preview_text(cid: int, item: dict, draft: NewsDraft) -> str:
     )
 
 
+def make_cards(cfg: Config, cid: int, draft: NewsDraft, breaking: bool = False) -> list[str]:
+    """카드 이미지를 만든다. AI 배경이 켜져 있으면 만들어서 깔고, 실패하면 기본 배경으로 계속한다."""
+    out = os.path.join(CARD_DIR, str(cid))
+    os.makedirs(out, exist_ok=True)
+    bg = None
+    if cfg.ai_images and cfg.openai_key:
+        try:
+            bg = generate_background(cfg, draft.image_prompt, os.path.join(out, "bg.png"))
+        except Exception as e:
+            print(f"background error: {e}")
+    return render_cards(draft, out, cfg.font_path, cfg.card_footer, cfg.brand_name, breaking, bg)
+
+
 def _send_review(cfg: Config, tg: Telegram, cid: int, item: dict, draft: NewsDraft, breaking: bool = False) -> None:
-    paths = render_cards(draft, os.path.join(CARD_DIR, str(cid)), cfg.font_path, cfg.card_footer)
-    tg.send_photo(paths[0], f"#{cid} 표지")
-    tg.send_photo(paths[1], f"#{cid} 본문")
+    paths = make_cards(cfg, cid, draft, breaking)
+    tg.send_album(paths, f"#{cid} 카드 {len(paths)}장")
     tg.send(
         ("🚨 속보 후보\n" if breaking else "") + _preview_text(cid, item, draft),
         [("✅ 승인", f"ok:{cid}"), ("🔄 다시 쓰기", f"re:{cid}"), ("❌ 폐기", f"no:{cid}")],
@@ -102,7 +115,7 @@ def approve(cfg: Config, queue: Queue, tg: Telegram, cid: int) -> str:
     if not cand or cand["status"] != "proposed":
         return "이미 처리된 후보입니다"
     draft = _draft(cand["draft"])
-    paths = render_cards(draft, os.path.join(CARD_DIR, str(cid)), cfg.font_path, cfg.card_footer)
+    paths = make_cards(cfg, cid, draft, cand.get("kind") == "breaking")
     urls = [upload_image(cfg, p) for p in paths]
     if cand.get("kind") == "breaking":  # 속보는 시간이 생명이라 바로 발행
         slot = datetime.now(KST) + timedelta(minutes=2)

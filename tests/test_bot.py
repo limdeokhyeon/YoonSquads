@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", card_footer="f", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_max_per_day=2, breaking_max_age_min=90,
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", card_footer="f", brand_name="@b", ai_images=False, openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_max_per_day=2, breaking_max_age_min=90,
     )
     base.update(kw)
     return Config(**base)
@@ -80,6 +80,7 @@ def test_reject_and_approve_flow(monkeypatch):
     draft = NewsDraft("제목", ["가"], "본문", ["t"], "http://l").__dict__
     cid = q.add_candidate({"title": "t", "summary": "s", "link": "http://l", "pub_date": ""}, draft)
     monkeypatch.setattr(bot, "render_cards", lambda *a, **k: ["a.png", "b.png"])
+    monkeypatch.setattr(bot.os, "makedirs", lambda *a, **k: None)
     monkeypatch.setattr(bot, "upload_image", lambda cfg, p: f"https://img/{p}")
     bot.handle_update(make_cfg(), q, tg, _update(1, 1, f"ok:{cid}"))
     post = q.list("pending")[0]
@@ -243,13 +244,14 @@ def test_breaking_daily_cap_and_instant_publish(monkeypatch):
     from insta_agent.news import NewsItem
 
     q, tg = Queue(":memory:"), FakeTG()
-    tg.send_photo = lambda *a, **k: None
+    tg.send_album = lambda *a, **k: None
     now = datetime.now(timezone.utc)
     from email.utils import format_datetime
     mk = lambda t, n: NewsItem(t, "s", f"http://{n}", format_datetime(now))
     monkeypatch.setattr(bot, "collect_breaking", lambda cfg, seen, recent, limit: [mk("속보 가나다 사건", 1), mk("속보 완전히 다른 라마바 일", 2), mk("속보 셋째 아자차", 3)][:limit])
     monkeypatch.setattr(bot, "generate_news_draft", lambda cfg, item, fb="": NewsDraft("제목", ["가"], "본문", ["t"], item["link"]))
     monkeypatch.setattr(bot, "render_cards", lambda *a, **k: ["a.png", "b.png"])
+    monkeypatch.setattr(bot.os, "makedirs", lambda *a, **k: None)
     monkeypatch.setattr(bot, "upload_image", lambda cfg, p: "https://img/" + p)
     cfg = make_cfg()  # 하루 상한 2
     assert bot.propose_breaking(cfg, q, tg) == 2
@@ -326,3 +328,45 @@ def test_publishing_limit_parses_quota():
 
     c = InstagramClient(make_cfg(ig_user_id="", ig_access_token="IGAAx"), session=S())
     assert c.publishing_limit() == {"quota_usage": 2, "quota_total": 50}
+
+
+def test_render_cards_makes_cover_points_and_source(tmp_path):
+    import os
+    from insta_agent.cards import FONT_CANDIDATES
+
+    font = next((p for p in FONT_CANDIDATES + ["/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"] if os.path.exists(p)), None)
+    if not font:
+        pytest.skip("한글 폰트 없음")
+    d = NewsDraft("제목이 아주 길어서 여러 줄로 나뉘어야 하는 속보 헤드라인입니다", ["하나", "둘", "셋"], "c", [], "https://www.example.com/a")
+    paths = render_cards(d, str(tmp_path), font, "f", "@b", breaking=True)
+    assert [os.path.basename(p) for p in paths] == ["1_cover.png", "2_point.png", "3_point.png", "4_point.png", "5_source.png"]
+    from PIL import Image
+    assert Image.open(paths[0]).size == (1080, 1350)
+
+
+def test_ai_background_falls_back_when_generation_fails(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    got = {}
+    monkeypatch.setattr(bot, "generate_background", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("quota")))
+    monkeypatch.setattr(bot, "render_cards", lambda draft, out, font, foot, brand, breaking, bg: got.setdefault("bg", bg) or ["x.png"])
+    cfg = make_cfg(ai_images=True, openai_key="k")
+    bot.make_cards(cfg, 1, NewsDraft("h", ["b"], "c", [], "l"))
+    assert got["bg"] is None  # 실패해도 기본 배경으로 계속
+
+
+def test_generate_background_decodes_b64(tmp_path):
+    import base64
+    from insta_agent.images import generate_background
+
+    class R:
+        def raise_for_status(self): pass
+        def json(self): return {"data": [{"b64_json": base64.b64encode(b"PNGDATA").decode()}]}
+
+    class H:
+        def post(self, url, headers, json, timeout):
+            assert url.endswith("/images/generations") and headers["Authorization"] == "Bearer k"
+            assert "No text" in json["prompt"] and json["size"] == "1024x1536"
+            return R()
+
+    out = generate_background(make_cfg(openai_key="k"), "a blue shape", str(tmp_path / "bg.png"), http=H())
+    assert open(out, "rb").read() == b"PNGDATA"

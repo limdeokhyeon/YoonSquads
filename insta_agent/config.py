@@ -30,6 +30,10 @@ class Config:
     imgbb_key: str
     font_path: str
     card_footer: str
+    brand_name: str
+    ai_images: bool
+    openai_key: str
+    openai_image_model: str
     fetch_body: bool
     breaking_enabled: bool
     breaking_keywords: list[str]
@@ -64,6 +68,10 @@ class Config:
             breaking_max_per_day=int(os.getenv("BREAKING_MAX_PER_DAY", "5")),
             breaking_max_age_min=int(os.getenv("BREAKING_MAX_AGE_MIN", "90")),
             fetch_body=os.getenv("FETCH_BODY", "false").lower() in ("1", "true", "yes"),
+            brand_name=os.getenv("BRAND_NAME", ""),
+            ai_images=os.getenv("AI_IMAGES", "false").lower() in ("1", "true", "yes"),
+            openai_key=os.getenv("OPENAI_API_KEY", ""),
+            openai_image_model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"),
             card_footer=os.getenv("CARD_FOOTER", "※ 보도 내용을 요약한 것으로, 자세한 내용은 출처 기사를 확인하세요"),
         )
 

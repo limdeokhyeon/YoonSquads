@@ -37,6 +37,23 @@ class Telegram:
         if not resp.json().get("ok"):
             raise RuntimeError(f"Telegram sendPhoto 실패: {resp.text[:200]}")
 
+    def send_album(self, paths: list[str], caption: str = "") -> None:
+        """사진 여러 장을 한 묶음으로 보낸다(최대 10장)."""
+        media = [{"type": "photo", "media": f"attach://p{i}", **({"caption": caption[:1000]} if i == 0 and caption else {})} for i in range(len(paths))]
+        files = {f"p{i}": open(p, "rb") for i, p in enumerate(paths)}
+        try:
+            resp = self.http.post(
+                f"{self.base}/sendMediaGroup",
+                data={"chat_id": self.chat_id, "media": json.dumps(media)},
+                files=files,
+                timeout=120,
+            )
+        finally:
+            for f in files.values():
+                f.close()
+        if not resp.json().get("ok"):
+            raise RuntimeError(f"Telegram sendMediaGroup 실패: {resp.text[:200]}")
+
     def answer_callback(self, callback_id: str, text: str = "") -> None:
         self._call("answerCallbackQuery", callback_query_id=callback_id, text=text)
 

@@ -95,7 +95,8 @@ NEWS_SYSTEM = """당신은 인스타그램 뉴스 카드 에디터입니다.
 - hashtags: '#' 없이 8~12개
 - 정치·시사 기사는 중립을 지킬 것: 특정 정당·인물·진영을 편들거나 비난하는 표현, 추측·단정, 선동적 표현 금지. 기사에 나온 사실과 각 측의 입장을 구분해 서술
 - 의료·건강·투자 관련 내용은 단정하지 말고 전문가 확인을 권하는 톤 유지
-반드시 JSON만 출력: {"headline": str, "bullets": [str], "caption": str, "hashtags": [str]}"""
+- image_prompt: 카드 배경용 영어 한 문장. 기사 주제를 상징하는 추상적 장면(도형·사물·풍경). 글자, 실제 인물·얼굴·정당 로고는 넣지 말 것
+반드시 JSON만 출력: {"headline": str, "bullets": [str], "caption": str, "hashtags": [str], "image_prompt": str}"""
 
 
 @dataclass
@@ -105,6 +106,7 @@ class NewsDraft:
     caption: str
     hashtags: list[str]
     source_link: str
+    image_prompt: str = ""
 
     def full_text(self) -> str:
         tags = " ".join(f"#{t}" for t in self.hashtags)
@@ -120,7 +122,7 @@ def parse_news_draft(raw: str, source_link: str) -> NewsDraft:
     bullets = [str(b).strip() for b in d["bullets"] if str(b).strip()][:4]
     if not bullets:
         raise ValueError("bullets가 비어 있습니다")
-    return NewsDraft(str(d["headline"]).strip(), bullets, base.caption, base.hashtags, source_link)
+    return NewsDraft(str(d["headline"]).strip(), bullets, base.caption, base.hashtags, source_link, str(d.get("image_prompt", "")).strip())
 
 
 OVERLAP_LIMIT = 25  # 원문과 연속 25자 이상 같으면 베낀 것으로 보고 다시 쓴다
