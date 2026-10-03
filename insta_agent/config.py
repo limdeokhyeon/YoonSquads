@@ -38,6 +38,7 @@ class Config:
     imgbb_key: str
     font_path: str
     ai_label: bool
+    brand_hashtag: str
     photo_source: str
     unsplash_key: str
     openai_key: str
@@ -76,6 +77,7 @@ class Config:
             breaking_max_per_day=int(os.getenv("BREAKING_MAX_PER_DAY", "5")),
             breaking_max_age_min=int(os.getenv("BREAKING_MAX_AGE_MIN", "90")),
             fetch_body=os.getenv("FETCH_BODY", "false").lower() in ("1", "true", "yes"),
+            brand_hashtag=os.getenv("BRAND_HASHTAG", "").lstrip("#"),
             ai_label=os.getenv("AI_LABEL", "true").lower() in ("1", "true", "yes"),
             photo_source=_photo_source(),
             unsplash_key=os.getenv("UNSPLASH_ACCESS_KEY", ""),

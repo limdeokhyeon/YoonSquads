@@ -121,6 +121,19 @@ class Queue:
         self.db.commit()
         return cur.rowcount
 
+    def recent_styles(self, n: int = 12) -> list[dict]:
+        """최근 후보(폐기·실패 제외)의 해시태그와 캡션 첫 줄. 새 글이 겹치지 않게 참고용으로 쓴다."""
+        rows = self.db.execute(
+            "SELECT draft FROM candidates WHERE status IN ('proposed','approved') AND kind != 'breaking_failed' ORDER BY id DESC LIMIT ?",
+            (n,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = json.loads(r["draft"] or "{}")
+            if d.get("caption"):
+                out.append({"tags": d.get("hashtags", []), "hook": d["caption"].strip().split("\n")[0]})
+        return out
+
     def pending_slots(self) -> list[datetime]:
         return [p.scheduled_at for p in self.list("pending")]
 

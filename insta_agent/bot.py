@@ -95,7 +95,7 @@ def propose(cfg: Config, queue: Queue, tg: Telegram) -> int:
             data = item.to_dict()
             if cfg.fetch_body:
                 data["body"] = fetch_body(item.link)
-            draft = generate_news_draft(cfg, data)
+            draft = generate_news_draft(cfg, data, recent=queue.recent_styles())
             cid = queue.add_candidate(data, asdict(draft))
             _send_review(cfg, tg, cid, data, draft)
             sent += 1
@@ -117,7 +117,7 @@ def propose_breaking(cfg: Config, queue: Queue, tg: Telegram) -> int:
             data = item.to_dict()
             if cfg.fetch_body:
                 data["body"] = fetch_body(item.link)
-            draft = generate_news_draft(cfg, data)
+            draft = generate_news_draft(cfg, data, recent=queue.recent_styles())
             draft.badge = "속보"  # 속보 감시로 들어온 기사는 항상 속보 배지
             cid = queue.add_candidate(data, asdict(draft), kind="breaking")
             _send_review(cfg, tg, cid, data, draft, breaking=True)
@@ -155,7 +155,7 @@ def regenerate(cfg: Config, queue: Queue, tg: Telegram, cid: int, feedback: str 
     if not cand or cand["status"] != "proposed":
         tg.send("이미 처리된 후보입니다")
         return
-    draft = generate_news_draft(cfg, cand["item"], feedback)
+    draft = generate_news_draft(cfg, cand["item"], feedback, recent=queue.recent_styles())
     queue.update_candidate(cid, draft=asdict(draft))
     _send_review(cfg, tg, cid, cand["item"], draft)
 

@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_max_per_day=2, breaking_max_age_min=90,
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, brand_hashtag="", photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_max_per_day=2, breaking_max_age_min=90,
     )
     base.update(kw)
     return Config(**base)
@@ -238,7 +238,7 @@ def test_breaking_daily_cap_and_instant_publish(monkeypatch):
     from email.utils import format_datetime
     mk = lambda t, n: NewsItem(t, "s", f"http://{n}", format_datetime(now))
     monkeypatch.setattr(bot, "collect_breaking", lambda cfg, seen, recent, limit: [mk("속보 가나다 사건", 1), mk("속보 완전히 다른 라마바 일", 2), mk("속보 셋째 아자차", 3)][:limit])
-    monkeypatch.setattr(bot, "generate_news_draft", lambda cfg, item, fb="": NewsDraft("제목", ["가"], "본문", ["t"], item["link"]))
+    monkeypatch.setattr(bot, "generate_news_draft", lambda cfg, item, fb="", **k: NewsDraft("제목", ["가"], "본문", ["t"], item["link"]))
     monkeypatch.setattr(bot, "render_card", lambda *a, **k: "a.png")
     monkeypatch.setattr(bot.os, "makedirs", lambda *a, **k: None)
     monkeypatch.setattr(bot, "upload_image", lambda cfg, p: "https://img/" + p)
@@ -480,3 +480,34 @@ def test_unsplash_download_tracked_only_on_approval(monkeypatch, tmp_path):
     assert tracked == []                                                             # 폐기될 수도 있으니 아직 집계 안 함
     bot.approve(cfg, q, tg, cid)
     assert tracked == ["http://dl"]
+
+
+def test_diversify_tags_drops_recent_keeps_brand_and_minimum():
+    from insta_agent.content import diversify_tags
+
+    assert diversify_tags(["a", "b", "c", "d", "e"], ["a", "B"], brand="브랜드") == ["c", "d", "e", "브랜드"]
+    # 새 태그가 모자라면 덜 겹치는 순서가 아니라도 최소 개수까지 채운다
+    out = diversify_tags(["a", "b", "c", "d"], ["a", "b", "c"], min_keep=3)
+    assert len(out) == 3 and "d" in out
+    # 계정 고유 태그는 겹쳐도 중복 없이 한 번만
+    assert diversify_tags(["x", "브랜드", "y", "z", "w"], [], brand="브랜드").count("브랜드") == 1
+
+
+def test_recent_styles_and_prompt_avoid_repeats(monkeypatch):
+    from insta_agent import content
+
+    q = Queue(":memory:")
+    q.add_candidate({"link": "1", "title": "t"}, {"caption": "첫 줄 후크\n본문", "hashtags": ["정치", "예산"]})
+    q.add_candidate({"link": "2", "title": "t"}, {})                    # 실패 기록은 제외
+    q.update_candidate(q.add_candidate({"link": "3", "title": "t"}, {"caption": "폐기됨", "hashtags": ["x"]}), status="rejected")
+    recent = q.recent_styles()
+    assert recent == [{"tags": ["정치", "예산"], "hook": "첫 줄 후크"}]
+
+    seen = {}
+    def fake(cfg, system, user, max_tokens=1500):
+        seen["user"] = user
+        return '{"badge":"속보","headline":"h","subhead":"s","bullets":["b"],"caption":"c","hashtags":["정치","새태그1","새태그2","새태그3","새태그4"],"photo_query":"q","image_prompt":"p"}'
+    monkeypatch.setattr(content, "complete", fake)
+    d = content.generate_news_draft(make_cfg(brand_hashtag="나우이슈"), {"title": "t", "summary": "s", "link": "l"}, recent=recent)
+    assert "쓰지 말 것)" in seen["user"] and "예산" in seen["user"] and "첫 줄 후크" in seen["user"]
+    assert "정치" not in d.hashtags and d.hashtags[-1] == "나우이슈"
