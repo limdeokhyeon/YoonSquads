@@ -59,3 +59,9 @@ python -m insta_agent.cli serve
 - `EAA...`로 시작(Facebook 로그인): `graph.facebook.com` 사용, `IG_USER_ID` 필요, 자동 갱신 없음
 - 확인: `python3 -m insta_agent.cli ig-whoami` / 수동 갱신: `python3 -m insta_agent.cli ig-refresh`
 - Meta **앱 시크릿은 이 에이전트에 필요 없습니다.** 어디에도 저장하지 마세요.
+
+## 서버 업데이트
+서버 맥북에서는 `git pull` 대신 아래를 쓰세요. 로컬 변경 충돌 없이 GitHub 최신 코드로 맞추고 패키지도 설치합니다.
+```bash
+bash update.sh
+```
