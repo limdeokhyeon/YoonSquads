@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
+from email.utils import parsedate_to_datetime
 from dataclasses import asdict, dataclass
 
 import requests
@@ -64,4 +67,38 @@ def collect(cfg: Config, seen: set[str], http=requests) -> list[NewsItem]:
                     break
             if len(picked) >= cfg.daily_count:
                 break
+    return picked
+
+
+def _norm(title: str) -> str:
+    return re.sub(r"[\[\]()\"'“”‘’…·,.!?]|속보|단독", "", title).replace(" ", "")
+
+
+def is_similar(title: str, others: list[str], threshold: float = 0.55) -> bool:
+    """같은 사건을 다룬 다른 언론사 기사인지(제목이 비슷한지) 판단."""
+    a = _norm(title)
+    return any(SequenceMatcher(None, a, _norm(o)).ratio() >= threshold for o in others if o)
+
+
+def collect_breaking(cfg: Config, seen: set[str], recent_titles: list[str], limit: int, now: datetime | None = None, http=requests) -> list[NewsItem]:
+    """최근 `breaking_max_age_min`분 안에 나온 '속보' 기사 중 새 사건만 최대 limit건."""
+    now = now or datetime.now(timezone.utc)
+    oldest = now - timedelta(minutes=cfg.breaking_max_age_min)
+    picked: list[NewsItem] = []
+    titles = list(recent_titles)
+    for kw in cfg.breaking_keywords:
+        for item in search_news(cfg, kw, http=http):
+            if len(picked) >= limit:
+                return picked
+            if item.link in seen or kw not in item.title:
+                continue
+            try:
+                if parsedate_to_datetime(item.pub_date) < oldest:
+                    continue
+            except Exception:
+                continue  # 시각을 모르면 오래된 기사일 수 있으니 제외
+            if is_similar(item.title, titles):
+                continue
+            picked.append(item)
+            titles.append(item.title)
     return picked

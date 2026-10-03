@@ -15,7 +15,7 @@ from .config import Config
 from .content import NewsDraft, generate_news_draft
 from .hosting import upload_image
 from .instagram import InstagramClient
-from .news import collect
+from .news import collect, collect_breaking
 from .queue import Queue
 from .telegram import Telegram
 
@@ -47,12 +47,12 @@ def _preview_text(cid: int, item: dict, draft: NewsDraft) -> str:
     )
 
 
-def _send_review(cfg: Config, tg: Telegram, cid: int, item: dict, draft: NewsDraft) -> None:
+def _send_review(cfg: Config, tg: Telegram, cid: int, item: dict, draft: NewsDraft, breaking: bool = False) -> None:
     paths = render_cards(draft, os.path.join(CARD_DIR, str(cid)), cfg.font_path, cfg.card_footer)
     tg.send_photo(paths[0], f"#{cid} 표지")
     tg.send_photo(paths[1], f"#{cid} 본문")
     tg.send(
-        _preview_text(cid, item, draft),
+        ("🚨 속보 후보\n" if breaking else "") + _preview_text(cid, item, draft),
         [("✅ 승인", f"ok:{cid}"), ("🔄 다시 쓰기", f"re:{cid}"), ("❌ 폐기", f"no:{cid}")],
     )
 
@@ -76,6 +76,27 @@ def propose(cfg: Config, queue: Queue, tg: Telegram) -> int:
     return sent
 
 
+def propose_breaking(cfg: Config, queue: Queue, tg: Telegram) -> int:
+    """속보 후보를 찾아 즉시 검토 요청을 보낸다. 하루 상한을 넘기면 조용히 건너뛴다."""
+    room = cfg.breaking_max_per_day - queue.count_today("breaking")
+    if room <= 0:
+        return 0
+    sent = 0
+    for item in collect_breaking(cfg, queue.seen_links(), queue.recent_titles(), room):
+        try:
+            data = item.to_dict()
+            if cfg.fetch_body:
+                data["body"] = fetch_body(item.link)
+            draft = generate_news_draft(cfg, data)
+            cid = queue.add_candidate(data, asdict(draft), kind="breaking")
+            _send_review(cfg, tg, cid, data, draft, breaking=True)
+            sent += 1
+        except Exception as e:
+            print(f"breaking error: {e}")  # 5분마다 반복될 수 있어 텔레그램에는 보내지 않는다
+            queue.add_candidate({**item.to_dict(), "skipped": str(e)}, {}, kind="breaking_failed")
+    return sent
+
+
 def approve(cfg: Config, queue: Queue, tg: Telegram, cid: int) -> str:
     cand = queue.get_candidate(cid)
     if not cand or cand["status"] != "proposed":
@@ -83,7 +104,10 @@ def approve(cfg: Config, queue: Queue, tg: Telegram, cid: int) -> str:
     draft = _draft(cand["draft"])
     paths = render_cards(draft, os.path.join(CARD_DIR, str(cid)), cfg.font_path, cfg.card_footer)
     urls = [upload_image(cfg, p) for p in paths]
-    slot = next_slot(cfg.post_hours, queue.pending_slots())
+    if cand.get("kind") == "breaking":  # 속보는 시간이 생명이라 바로 발행
+        slot = datetime.now(KST) + timedelta(minutes=2)
+    else:
+        slot = next_slot(cfg.post_hours, queue.pending_slots())
     post_id = queue.add(draft.full_text(), urls, slot)
     queue.update_candidate(cid, status="approved", post_id=post_id)
     when = slot.astimezone(KST).strftime("%m/%d %H:%M")
@@ -139,13 +163,17 @@ def serve(cfg: Config) -> None:
     # 켤 때마다 후보가 쏟아지지 않도록, 이미 수집 시각이 지났으면 오늘 몫은 건너뛴다
     now0 = datetime.now(KST)
     last_collect = now0.date() if now0.hour >= cfg.collect_hour else None
-    tg.send("🤖 봇이 시작되었습니다. /collect 로 지금 수집할 수 있어요.")
+    next_breaking = 0.0
+    tg.send("🤖 봇이 시작되었습니다. /collect 로 지금 수집할 수 있어요." + (f"\n🚨 속보 감시 켜짐: {cfg.breaking_poll_minutes}분마다 확인, 하루 최대 {cfg.breaking_max_per_day}건" if cfg.breaking_enabled else ""))
     while True:
         try:
             now = datetime.now(KST)
             if now.hour >= cfg.collect_hour and last_collect != now.date():
                 last_collect = now.date()
                 propose(cfg, queue, tg)
+            if cfg.breaking_enabled and time.monotonic() >= next_breaking:
+                next_breaking = time.monotonic() + cfg.breaking_poll_minutes * 60
+                propose_breaking(cfg, queue, tg)
             for result in run_due(queue, ig):
                 tg.send(f"📤 발행 결과 #{result[0]}: {result[1][:300]}")
             for update in tg.get_updates(offset):

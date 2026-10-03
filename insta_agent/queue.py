@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS posts (
@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS candidates (
     item TEXT NOT NULL,
     draft TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'proposed',   -- proposed | approved | rejected
-    post_id INTEGER
+    post_id INTEGER,
+    kind TEXT NOT NULL DEFAULT 'daily',        -- daily | breaking
+    created TEXT
 )"""
 
 
@@ -58,15 +60,20 @@ class Queue:
         self.db.row_factory = sqlite3.Row
         self.db.execute(SCHEMA)
         self.db.execute(CANDIDATES)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(candidates)")}
+        if "kind" not in cols:  # 기존 DB 마이그레이션
+            self.db.execute("ALTER TABLE candidates ADD COLUMN kind TEXT NOT NULL DEFAULT 'daily'")
+        if "created" not in cols:
+            self.db.execute("ALTER TABLE candidates ADD COLUMN created TEXT")
 
     # --- 뉴스 후보(텔레그램 검토 대기) ---
     def seen_links(self) -> set[str]:
         return {r["link"] for r in self.db.execute("SELECT link FROM candidates")}
 
-    def add_candidate(self, item: dict, draft: dict) -> int:
+    def add_candidate(self, item: dict, draft: dict, kind: str = "daily") -> int:
         cur = self.db.execute(
-            "INSERT INTO candidates (link, item, draft) VALUES (?,?,?)",
-            (item["link"], json.dumps(item, ensure_ascii=False), json.dumps(draft, ensure_ascii=False)),
+            "INSERT INTO candidates (link, item, draft, kind, created) VALUES (?,?,?,?,?)",
+            (item["link"], json.dumps(item, ensure_ascii=False), json.dumps(draft, ensure_ascii=False), kind, _now().isoformat()),
         )
         self.db.commit()
         return cur.lastrowid
@@ -75,7 +82,21 @@ class Queue:
         r = self.db.execute("SELECT * FROM candidates WHERE id=?", (cid,)).fetchone()
         if not r:
             return None
-        return {"id": r["id"], "item": json.loads(r["item"]), "draft": json.loads(r["draft"]), "status": r["status"]}
+        return {"id": r["id"], "item": json.loads(r["item"]), "draft": json.loads(r["draft"]), "status": r["status"], "kind": r["kind"]}
+
+    def count_today(self, kind: str, now: datetime | None = None) -> int:
+        """한국시간 기준 오늘 만든 후보 수."""
+        kst = timezone(timedelta(hours=9))
+        start = (now or _now()).astimezone(kst).replace(hour=0, minute=0, second=0, microsecond=0)
+        row = self.db.execute(
+            "SELECT COUNT(*) FROM candidates WHERE kind=? AND created >= ?",
+            (kind, start.astimezone(timezone.utc).isoformat()),
+        ).fetchone()
+        return row[0]
+
+    def recent_titles(self, n: int = 60) -> list[str]:
+        rows = self.db.execute("SELECT item FROM candidates ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        return [json.loads(r["item"]).get("title", "") for r in rows]
 
     def update_candidate(self, cid: int, *, draft: dict | None = None, status: str | None = None, post_id: int | None = None) -> None:
         if draft is not None:

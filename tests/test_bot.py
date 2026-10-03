@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", card_footer="f", fetch_body=False,
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", card_footer="f", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_max_per_day=2, breaking_max_age_min=90,
     )
     base.update(kw)
     return Config(**base)
@@ -212,3 +212,50 @@ def test_clear_rejects_only_proposed():
     bot.handle_update(make_cfg(), q, tg, upd)
     assert q.get_candidate(a)["status"] == "rejected" and q.get_candidate(b)["status"] == "approved"
     assert "1건" in tg.sent[-1]
+
+
+def _hub_item(title, link, minutes_ago, now):
+    from email.utils import format_datetime
+    from insta_agent.news import NewsItem
+    return NewsItem(title, "s", link, format_datetime(now - timedelta(minutes=minutes_ago)))
+
+
+def test_breaking_filters_old_duplicate_and_unrelated(monkeypatch):
+    from insta_agent import news
+
+    now = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
+    items = [
+        _hub_item("[속보] 정부, 내년 예산안 확정", "http://1", 5, now),
+        _hub_item("속보 정부 내년 예산안 확정…국회 제출", "http://2", 6, now),   # 같은 사건
+        _hub_item("[속보] 오래된 기사", "http://3", 300, now),                     # 너무 오래됨
+        _hub_item("오늘의 날씨", "http://4", 3, now),                              # 속보 아님
+        _hub_item("[속보] 환율 급등 1400원 돌파", "http://5", 10, now),
+    ]
+    monkeypatch.setattr(news, "search_news", lambda cfg, kw, limit=30, http=None: items)
+    got = news.collect_breaking(make_cfg(), set(), [], limit=5, now=now)
+    assert [i.link for i in got] == ["http://1", "http://5"]
+    # 이미 보낸 사건은 제외
+    got = news.collect_breaking(make_cfg(), set(), ["정부, 내년 예산안 확정"], limit=5, now=now)
+    assert [i.link for i in got] == ["http://5"]
+
+
+def test_breaking_daily_cap_and_instant_publish(monkeypatch):
+    from insta_agent.news import NewsItem
+
+    q, tg = Queue(":memory:"), FakeTG()
+    tg.send_photo = lambda *a, **k: None
+    now = datetime.now(timezone.utc)
+    from email.utils import format_datetime
+    mk = lambda t, n: NewsItem(t, "s", f"http://{n}", format_datetime(now))
+    monkeypatch.setattr(bot, "collect_breaking", lambda cfg, seen, recent, limit: [mk("속보 가나다 사건", 1), mk("속보 완전히 다른 라마바 일", 2), mk("속보 셋째 아자차", 3)][:limit])
+    monkeypatch.setattr(bot, "generate_news_draft", lambda cfg, item, fb="": NewsDraft("제목", ["가"], "본문", ["t"], item["link"]))
+    monkeypatch.setattr(bot, "render_cards", lambda *a, **k: ["a.png", "b.png"])
+    monkeypatch.setattr(bot, "upload_image", lambda cfg, p: "https://img/" + p)
+    cfg = make_cfg()  # 하루 상한 2
+    assert bot.propose_breaking(cfg, q, tg) == 2
+    assert bot.propose_breaking(cfg, q, tg) == 0  # 상한 도달
+    cid = q.get_candidate(1)
+    assert cid["kind"] == "breaking"
+    bot.approve(cfg, q, tg, 1)
+    slot = q.list("pending")[0].scheduled_at
+    assert slot - datetime.now(timezone.utc) < timedelta(minutes=3)  # 정해진 시각이 아니라 바로 발행

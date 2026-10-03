@@ -31,6 +31,11 @@ class Config:
     font_path: str
     card_footer: str
     fetch_body: bool
+    breaking_enabled: bool
+    breaking_keywords: list[str]
+    breaking_poll_minutes: int
+    breaking_max_per_day: int
+    breaking_max_age_min: int
 
     @classmethod
     def load(cls) -> "Config":
@@ -53,6 +58,11 @@ class Config:
             post_hours=[int(h) for h in _list("POST_HOURS", "12,18,21")],
             imgbb_key=os.getenv("IMGBB_API_KEY", ""),
             font_path=os.getenv("FONT_PATH", ""),
+            breaking_enabled=os.getenv("BREAKING", "false").lower() in ("1", "true", "yes"),
+            breaking_keywords=_list("BREAKING_KEYWORDS", "속보"),
+            breaking_poll_minutes=int(os.getenv("BREAKING_POLL_MINUTES", "5")),
+            breaking_max_per_day=int(os.getenv("BREAKING_MAX_PER_DAY", "5")),
+            breaking_max_age_min=int(os.getenv("BREAKING_MAX_AGE_MIN", "90")),
             fetch_body=os.getenv("FETCH_BODY", "false").lower() in ("1", "true", "yes"),
             card_footer=os.getenv("CARD_FOOTER", "※ 보도 내용을 요약한 것으로, 자세한 내용은 출처 기사를 확인하세요"),
         )
