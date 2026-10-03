@@ -36,6 +36,8 @@ def main(argv=None) -> None:
     r.add_argument("--dry-run", action="store_true")
 
     sub.add_parser("list", help="큐 조회")
+    sub.add_parser("ig-whoami", help="인스타 토큰이 유효한지, 어느 계정인지 확인")
+    sub.add_parser("ig-refresh", help="인스타 장기 토큰 연장 후 .env에 저장")
     sub.add_parser("serve", help="텔레그램 봇 상시 실행 (뉴스 수집·승인·예약발행)")
 
     args = p.parse_args(argv)
@@ -50,6 +52,14 @@ def main(argv=None) -> None:
     elif args.cmd == "run":
         for pid, result in run_due(Queue(cfg.db_path), InstagramClient(cfg), args.dry_run):
             print(f"#{pid}: {result}")
+    elif args.cmd == "ig-whoami":
+        info = InstagramClient(cfg).whoami()
+        print("연결 성공:", info)
+    elif args.cmd == "ig-refresh":
+        from .config import update_env
+        token, expires = InstagramClient(cfg).refresh_token()
+        update_env("IG_ACCESS_TOKEN", token)
+        print(f"갱신 완료 (유효 {expires // 86400}일). .env에 저장했습니다.")
     elif args.cmd == "serve":
         from .bot import serve
         serve(cfg)

@@ -60,11 +60,20 @@ class Queue:
         self.db.row_factory = sqlite3.Row
         self.db.execute(SCHEMA)
         self.db.execute(CANDIDATES)
+        self.db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(candidates)")}
         if "kind" not in cols:  # 기존 DB 마이그레이션
             self.db.execute("ALTER TABLE candidates ADD COLUMN kind TEXT NOT NULL DEFAULT 'daily'")
         if "created" not in cols:
             self.db.execute("ALTER TABLE candidates ADD COLUMN created TEXT")
+
+    def get_meta(self, key: str) -> str | None:
+        r = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return r["value"] if r else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.db.execute("INSERT INTO meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+        self.db.commit()
 
     # --- 뉴스 후보(텔레그램 검토 대기) ---
     def seen_links(self) -> set[str]:

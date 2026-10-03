@@ -66,3 +66,15 @@ class Config:
             fetch_body=os.getenv("FETCH_BODY", "false").lower() in ("1", "true", "yes"),
             card_footer=os.getenv("CARD_FOOTER", "※ 보도 내용을 요약한 것으로, 자세한 내용은 출처 기사를 확인하세요"),
         )
+
+
+def update_env(key: str, value: str, path: str = ".env") -> None:
+    """.env의 `key=` 줄을 바꾸고, 없으면 추가한다."""
+    lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key}="):
+            lines[i] = f"{key}={value}"
+            break
+    else:
+        lines.append(f"{key}={value}")
+    open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")

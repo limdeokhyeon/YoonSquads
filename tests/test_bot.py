@@ -259,3 +259,52 @@ def test_breaking_daily_cap_and_instant_publish(monkeypatch):
     bot.approve(cfg, q, tg, 1)
     slot = q.list("pending")[0].scheduled_at
     assert slot - datetime.now(timezone.utc) < timedelta(minutes=3)  # 정해진 시각이 아니라 바로 발행
+
+
+def test_instagram_host_and_me_for_igaa_token():
+    from insta_agent.instagram import InstagramClient, api_host
+
+    assert api_host("IGAAabc") == "graph.instagram.com" and api_host("EAAabc") == "graph.facebook.com"
+    c = InstagramClient(make_cfg(ig_user_id="", ig_access_token="IGAAx"))
+    assert c.base.startswith("https://graph.instagram.com/") and c.user == "me"
+    c2 = InstagramClient(make_cfg(ig_user_id="123", ig_access_token="EAAx"))
+    assert c2.base.startswith("https://graph.facebook.com/") and c2.user == "123"
+
+
+def test_refresh_token_and_env_update(tmp_path):
+    from insta_agent.config import update_env
+    from insta_agent.instagram import InstagramClient
+
+    class R:
+        status_code = 200
+        text = ""
+        def json(self): return {"access_token": "IGAAnew", "token_type": "bearer", "expires_in": 5184000}
+
+    class S:
+        def get(self, url, params, timeout):
+            assert url == "https://graph.instagram.com/refresh_access_token"
+            assert params["grant_type"] == "ig_refresh_token" and params["access_token"] == "IGAAold"
+            return R()
+
+    c = InstagramClient(make_cfg(ig_access_token="IGAAold"), session=S())
+    assert c.refresh_token() == ("IGAAnew", 5184000) and c.token == "IGAAnew"
+    env = tmp_path / ".env"
+    env.write_text("A=1\nIG_ACCESS_TOKEN=IGAAold\n")
+    update_env("IG_ACCESS_TOKEN", "IGAAnew", str(env))
+    update_env("NEW", "x", str(env))
+    assert env.read_text() == "A=1\nIG_ACCESS_TOKEN=IGAAnew\nNEW=x\n"
+
+
+def test_maybe_refresh_token_schedule(monkeypatch, tmp_path):
+    from insta_agent.instagram import InstagramClient
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("IG_ACCESS_TOKEN=IGAAold\n")
+    q, tg = Queue(":memory:"), FakeTG()
+    ig = InstagramClient(make_cfg(ig_access_token="IGAAold"))
+    monkeypatch.setattr(ig, "refresh_token", lambda: ("IGAAnew", 5184000))
+    t0 = datetime(2026, 10, 3, tzinfo=timezone.utc)
+    assert bot.maybe_refresh_token(q, ig, tg, now=t0) is False                      # 첫 실행: 기준 시각만 기록
+    assert bot.maybe_refresh_token(q, ig, tg, now=t0 + timedelta(days=10)) is False  # 아직 이름
+    assert bot.maybe_refresh_token(q, ig, tg, now=t0 + timedelta(days=31)) is True
+    assert "IGAAnew" in (tmp_path / ".env").read_text()

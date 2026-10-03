@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from .agent import run_due
 from .article import fetch_body
 from .cards import render_cards
-from .config import Config
+from .config import Config, update_env
 from .content import NewsDraft, generate_news_draft
 from .hosting import upload_image
 from .instagram import InstagramClient
@@ -156,6 +156,27 @@ def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None
         tg.send(f"⚠️ 처리 중 오류: {e}")
 
 
+TOKEN_REFRESH_DAYS = 30
+
+
+def maybe_refresh_token(queue: Queue, ig: InstagramClient, tg: Telegram, now: datetime | None = None) -> bool:
+    """Instagram 로그인 토큰(60일 만료)을 30일마다 연장하고 .env에 저장한다."""
+    if ig.host != "graph.instagram.com":
+        return False
+    now = now or datetime.now(timezone.utc)
+    last = queue.get_meta("ig_token_refreshed")
+    if last is None:  # 처음엔 방금 발급한 토큰이라고 보고 기준 시각만 기록
+        queue.set_meta("ig_token_refreshed", now.isoformat())
+        return False
+    if now - datetime.fromisoformat(last) < timedelta(days=TOKEN_REFRESH_DAYS):
+        return False
+    token, expires = ig.refresh_token()
+    update_env("IG_ACCESS_TOKEN", token)
+    queue.set_meta("ig_token_refreshed", now.isoformat())
+    tg.send(f"🔑 인스타 토큰을 갱신했습니다 (유효 {expires // 86400}일)")
+    return True
+
+
 def serve(cfg: Config) -> None:
     """상시 실행: 텔레그램 응답 처리 + 매일 수집 + 예약 발행."""
     queue, tg, ig = Queue(cfg.db_path), Telegram(cfg.telegram_token, cfg.telegram_chat_id), InstagramClient(cfg)
@@ -171,6 +192,11 @@ def serve(cfg: Config) -> None:
             if now.hour >= cfg.collect_hour and last_collect != now.date():
                 last_collect = now.date()
                 propose(cfg, queue, tg)
+            try:
+                maybe_refresh_token(queue, ig, tg)
+            except Exception as e:
+                tg.send(f"⚠️ 인스타 토큰 갱신 실패: {e}\n만료 전에 Meta 대시보드에서 새 토큰을 발급하세요")
+                queue.set_meta("ig_token_refreshed", datetime.now(timezone.utc).isoformat())  # 매 루프마다 재시도하지 않도록
             if cfg.breaking_enabled and time.monotonic() >= next_breaking:
                 next_breaking = time.monotonic() + cfg.breaking_poll_minutes * 60
                 propose_breaking(cfg, queue, tg)

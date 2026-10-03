@@ -53,3 +53,9 @@ python -m insta_agent.cli serve
 - 결과물이 원문과 연속 25자 이상 같으면 자동으로 한 번 더 다시 씀
 - 본문은 텔레그램·인스타에 올라가지 않으며 로컬 DB(`queue.db`)에만 저장됨
 언론사 약관·저작권은 본인 책임이며, 승인 전에 원문 링크로 사실관계를 확인하세요.
+
+## 인스타 토큰 종류와 갱신
+- `IGAA...`로 시작(Instagram 로그인): `graph.instagram.com` 사용, `IG_USER_ID`는 비워 둬도 됨(`me`), 60일 토큰을 30일마다 자동 연장 후 `.env`에 저장
+- `EAA...`로 시작(Facebook 로그인): `graph.facebook.com` 사용, `IG_USER_ID` 필요, 자동 갱신 없음
+- 확인: `python3 -m insta_agent.cli ig-whoami` / 수동 갱신: `python3 -m insta_agent.cli ig-refresh`
+- Meta **앱 시크릿은 이 에이전트에 필요 없습니다.** 어디에도 저장하지 마세요.
