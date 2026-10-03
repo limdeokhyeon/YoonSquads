@@ -26,6 +26,7 @@ class NewsItem:
     summary: str
     link: str
     pub_date: str
+    originallink: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -44,7 +45,7 @@ def search_news(cfg: Config, keyword: str, limit: int = 30, http=requests) -> li
     )
     resp.raise_for_status()
     return [
-        NewsItem(clean(i["title"]), clean(i.get("description", "")), i.get("link") or i["originallink"], i.get("pubDate", ""))
+        NewsItem(clean(i["title"]), clean(i.get("description", "")), i.get("link") or i["originallink"], i.get("pubDate", ""), i.get("originallink", ""))
         for i in resp.json().get("items", [])
     ]
 

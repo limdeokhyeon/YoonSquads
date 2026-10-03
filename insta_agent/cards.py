@@ -1,21 +1,21 @@
-"""카드뉴스 이미지(1080x1350, 인스타 4:5)를 Pillow로 직접 그린다. 기사 사진은 쓰지 않는다.
+"""한 장짜리 뉴스 카드(1080x1350, 인스타 4:5)를 그린다.
 
-구성: 표지 → 핵심 포인트(항목마다 1장) → 출처 안내. 배경은 그라데이션이며,
-AI가 만든 배경 이미지가 있으면 그 위에 어두운 막을 씌워 글자가 잘 보이게 한다.
+사진(AI 배경)을 화면 가득 깔고, 아래쪽을 어둡게 덮은 뒤
+[배지] [작은 문구] 큰 제목 / 부제 / "출처: 언론사 | 날짜" 순으로 아래에서부터 쌓는다.
+배경이 없으면 남색 그라데이션을 쓴다. 기사 사진은 쓰지 않는다.
 """
 
 from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
 
 from PIL import Image, ImageDraw, ImageFont
 
 from .content import NewsDraft
 
 W, H = 1080, 1350
-MARGIN = 84
+MARGIN = 72
 FONT_CANDIDATES = [
     "C:/Windows/Fonts/malgunbd.ttf",
     "C:/Windows/Fonts/malgun.ttf",
@@ -26,9 +26,9 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
 ]
 KST = timezone(timedelta(hours=9))
+WHITE, SOFT, DIM = (255, 255, 255), (222, 226, 234), (160, 168, 184)
+BADGE_RED = (214, 24, 24)
 NAVY_TOP, NAVY_BOTTOM = (9, 20, 44), (22, 52, 98)
-WHITE, SOFT = (255, 255, 255), (178, 192, 214)
-BREAKING_COLOR, NEWS_COLOR = (255, 69, 58), (64, 156, 255)
 
 
 def find_font(configured: str = "") -> str:
@@ -61,6 +61,20 @@ def wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont
     return lines
 
 
+def _fit(draw, text: str, font_path: str, max_w: int, max_lines: int, start: int, minimum: int):
+    """글자 크기를 줄여 가며 max_lines 안에 들어가는 크기를 찾는다. 그래도 넘치면 마지막 줄을 …로 자른다."""
+    for size in range(start, minimum - 1, -4):
+        font = ImageFont.truetype(font_path, size)
+        lines = wrap_text(draw, text, font, max_w)
+        if len(lines) <= max_lines:
+            return font, lines
+    lines = lines[:max_lines]
+    while lines and draw.textlength(lines[-1] + "…", font=font) > max_w:
+        lines[-1] = lines[-1][:-1]
+    lines[-1] += "…"
+    return font, lines
+
+
 def _gradient() -> Image.Image:
     img = Image.new("RGB", (W, H))
     px = ImageDraw.Draw(img)
@@ -74,105 +88,82 @@ def _background(bg_path: str | None) -> Image.Image:
     if not bg_path or not os.path.exists(bg_path):
         return _gradient()
     img = Image.open(bg_path).convert("RGB")
-    scale = max(W / img.width, H / img.height)  # 화면을 꽉 채우도록 확대 후 중앙 자르기
+    scale = max(W / img.width, H / img.height)  # 화면을 꽉 채우도록 확대
     img = img.resize((int(img.width * scale) + 1, int(img.height * scale) + 1))
-    left, top = (img.width - W) // 2, (img.height - H) // 2
-    img = img.crop((left, top, left + W, top + H))
-    shade = Image.new("RGB", (W, H), NAVY_TOP)
+    left = (img.width - W) // 2
+    top = int((img.height - H) * 0.25)  # 피사체가 위쪽에 있으니 위를 더 남기고 아래를 자른다
+    return img.crop((left, top, left + W, top + H))
+
+
+def _shade(img: Image.Image) -> Image.Image:
+    """위는 그대로 두고 40% 지점부터 서서히 어두워져, 아래쪽 글자가 잘 보이게 한다."""
     mask = Image.new("L", (W, H))
     m = ImageDraw.Draw(mask)
-    for y in range(H):  # 위는 옅게, 아래로 갈수록 진하게
-        m.line([(0, y), (W, y)], fill=int(150 + 85 * y / H))
-    return Image.composite(shade, img, mask)
+    for y in range(H):
+        t = min(max((y / H - 0.38) / 0.42, 0.0), 1.0)
+        t = t * t * (3 - 2 * t)  # smoothstep
+        m.line([(0, y), (W, y)], fill=int(245 * t))
+    return Image.composite(Image.new("RGB", (W, H), (4, 6, 12)), img, mask)
 
 
 def _bold(draw, xy, text, font, fill, stroke=1):
     draw.text(xy, text, font=font, fill=fill, stroke_width=stroke, stroke_fill=fill)
 
 
-def _chrome(img: Image.Image, font_path: str, page: int, total: int, label: str, color, brand: str) -> ImageDraw.ImageDraw:
-    d = ImageDraw.Draw(img)
-    badge = ImageFont.truetype(font_path, 36)
-    tw = int(d.textlength(label, font=badge))
-    d.rounded_rectangle([MARGIN, 84, MARGIN + tw + 56, 84 + 70], radius=35, fill=color)
-    _bold(d, (MARGIN + 28, 94), label, badge, WHITE, 0)
-    date = datetime.now(KST).strftime("%Y.%m.%d")
-    small = ImageFont.truetype(font_path, 32)
-    d.text((W - MARGIN - d.textlength(date, font=small), 98), date, font=small, fill=SOFT)
-    d.line([(MARGIN, H - 130), (W - MARGIN, H - 130)], fill=(70, 92, 130), width=2)
-    d.text((MARGIN, H - 98), brand, font=small, fill=SOFT)
-    pg = f"{page} / {total}"
-    d.text((W - MARGIN - d.textlength(pg, font=small), H - 98), pg, font=small, fill=SOFT)
-    return d
-
-
-def render_cards(
+def render_card(
     draft: NewsDraft,
     out_dir: str,
     font_path: str = "",
-    footer: str = "",
-    brand: str = "",
-    breaking: bool = False,
     bg_path: str | None = None,
-) -> list[str]:
-    """표지 + 핵심 포인트(항목당 1장) + 출처 안내. 저장한 파일 경로 목록을 순서대로 반환."""
-    font = find_font(font_path)
+    ai_label: bool = False,
+    breaking: bool = False,
+) -> str:
+    """카드 한 장을 저장하고 경로를 돌려준다."""
+    font_file = find_font(font_path)
     os.makedirs(out_dir, exist_ok=True)
-    bullets = draft.bullets[:3]
-    total = len(bullets) + 2
-    label, color = ("속보", BREAKING_COLOR) if breaking else ("오늘의 뉴스", NEWS_COLOR)
-    paths: list[str] = []
+    img = _shade(_background(bg_path))
+    d = ImageDraw.Draw(img)
+    max_w = W - 2 * MARGIN
 
-    def save(img: Image.Image, name: str) -> None:
-        path = os.path.join(out_dir, name)
-        img.save(path)
-        paths.append(path)
+    head_font, head_lines = _fit(d, draft.headline, font_file, max_w, 3, 112, 76)
+    sub_font, sub_lines = _fit(d, draft.subhead, font_file, max_w, 2, 50, 36) if draft.subhead else (None, [])
+    kick_font = ImageFont.truetype(font_file, 54)
+    badge_text = draft.badge or ("속보" if breaking else "뉴스")
+    badge_font = ImageFont.truetype(font_file, 58)
+    foot_font = ImageFont.truetype(font_file, 32)
+    date = datetime.now(KST).strftime("%Y.%m.%d.")
+    footer = f"출처: {draft.source_name or '기사 원문'}  |  {date}"
 
-    # 1) 표지
-    img = _background(bg_path)
-    d = _chrome(img, font, 1, total, label, color, brand)
-    big = ImageFont.truetype(font, 100)
-    lines = wrap_text(d, draft.headline, big, W - 2 * MARGIN)
-    y = max(330, (H - len(lines) * 140) // 2 - 40)
-    for line in lines[:5]:
-        _bold(d, (MARGIN, y), line, big, WHITE, 2)
-        y += 140
-    d.rounded_rectangle([MARGIN, y + 24, MARGIN + 140, y + 32], radius=4, fill=color)
-    hint = ImageFont.truetype(font, 38)
-    d.text((MARGIN, H - 260), "옆으로 넘겨 핵심을 확인하세요  →", font=hint, fill=SOFT)
-    save(img, "1_cover.png")
+    # 아래에서 위로 쌓는다
+    y = H - 64 - 36
+    d.text((MARGIN, y), footer, font=foot_font, fill=DIM)
+    y -= 36
+    if sub_lines:
+        sub_h = int(sub_font.size * 1.36)
+        y -= len(sub_lines) * sub_h
+        for i, line in enumerate(sub_lines):
+            d.text((MARGIN, y + i * sub_h), line, font=sub_font, fill=SOFT)
+        y -= 22
+    line_h = int(head_font.size * 1.24)
+    y -= len(head_lines) * line_h
+    for i, line in enumerate(head_lines):
+        _bold(d, (MARGIN, y + i * line_h), line, head_font, WHITE, 2)
+    y -= 14
+    if draft.kicker:
+        y -= 74
+        _bold(d, (MARGIN, y), draft.kicker, kick_font, SOFT, 1)
+        y -= 6
+    bw = int(d.textlength(badge_text, font=badge_font)) + 56
+    y -= 96
+    d.rounded_rectangle([MARGIN, y, MARGIN + bw, y + 84], radius=6, fill=BADGE_RED)
+    _bold(d, (MARGIN + 28, y + 8), badge_text, badge_font, WHITE, 1)
 
-    # 2) 핵심 포인트: 항목마다 한 장
-    for n, text in enumerate(bullets, 1):
-        img = _background(bg_path)
-        d = _chrome(img, font, n + 1, total, label, color, brand)
-        num = ImageFont.truetype(font, 200)
-        _bold(d, (MARGIN, 250), f"{n:02d}", num, color, 3)
-        body = ImageFont.truetype(font, 70)
-        y = 560
-        for line in wrap_text(d, text, body, W - 2 * MARGIN)[:6]:
-            _bold(d, (MARGIN, y), line, body, WHITE, 1)
-            y += 108
-        save(img, f"{n + 1}_point.png")
+    if ai_label and bg_path:
+        tag_font = ImageFont.truetype(font_file, 26)
+        tw = int(d.textlength("AI 생성 이미지", font=tag_font))
+        d.rounded_rectangle([W - MARGIN - tw - 36, 48, W - MARGIN, 48 + 46], radius=23, fill=(0, 0, 0))
+        d.text((W - MARGIN - tw - 18, 55), "AI 생성 이미지", font=tag_font, fill=SOFT)
 
-    # 3) 출처 안내
-    img = _background(bg_path)
-    d = _chrome(img, font, total, total, label, color, brand)
-    title = ImageFont.truetype(font, 76)
-    _bold(d, (MARGIN, 330), "출처 · 더 보기", title, WHITE, 2)
-    host = urlparse(draft.source_link).netloc.replace("www.", "") or "원문 기사"
-    sub = ImageFont.truetype(font, 48)
-    d.text((MARGIN, 470), host, font=sub, fill=color)
-    note = ImageFont.truetype(font, 40)
-    y = 580
-    for line in wrap_text(d, "자세한 내용은 원문 기사를 확인하세요. 링크는 캡션에 있습니다.", note, W - 2 * MARGIN):
-        d.text((MARGIN, y), line, font=note, fill=SOFT)
-        y += 62
-    if footer:
-        foot = ImageFont.truetype(font, 30)
-        y = H - 300
-        for line in wrap_text(d, footer, foot, W - 2 * MARGIN):
-            d.text((MARGIN, y), line, font=foot, fill=SOFT)
-            y += 46
-    save(img, f"{total}_source.png")
-    return paths
+    path = os.path.join(out_dir, "card.png")
+    img.save(path)
+    return path

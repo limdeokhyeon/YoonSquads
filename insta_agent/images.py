@@ -1,7 +1,7 @@
-"""OpenAI 이미지 API로 카드뉴스 배경(글자 없는 추상 이미지)을 만든다.
+"""OpenAI 이미지 API로 뉴스 카드 배경 사진(글자·인물 없는 장면)을 만든다.
 
 한글 글자는 AI가 자주 깨뜨리므로 이미지에는 글자를 넣지 않고, 글자는 cards.py가 위에 올린다.
-실제 인물·얼굴·기사 사진을 흉내 내지 않도록 프롬프트에 제한을 붙인다.
+실존 인물 얼굴이나 기사 사진을 흉내 내지 않도록 프롬프트에 제한을 붙인다.
 """
 
 from __future__ import annotations
@@ -13,11 +13,12 @@ import requests
 from .config import Config
 
 GUARD = (
-    " Editorial abstract illustration, symbolic and minimal, dark navy and blue palette with one warm accent, "
-    "vertical composition with calm empty space. No text, no letters, no numbers, no logos, "
-    "no real people, no faces, no photorealistic depiction of any real person or event."
+    " Photorealistic editorial news photograph style, dramatic natural lighting, vertical composition, "
+    "main subject in the upper two thirds, the lower third darker and uncluttered. "
+    "No text, no letters, no numbers, no readable signs, no logos, no watermarks. "
+    "Do not depict any real or identifiable person, no close-up faces; use symbolic scenes instead."
 )
-DEFAULT_PROMPT = "Abstract layered geometric shapes suggesting news and information flow."
+DEFAULT_PROMPT = "A dim newsroom with glowing screens and a city skyline seen through a window at dusk."
 
 
 def generate_background(cfg: Config, prompt: str, path: str, http=requests) -> str:

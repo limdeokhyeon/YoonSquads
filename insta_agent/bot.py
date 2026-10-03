@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from .agent import run_due
 from .article import fetch_body
-from .cards import render_cards
+from .cards import render_card
 from .config import Config, update_env
 from .content import NewsDraft, generate_news_draft
 from .hosting import upload_image
@@ -49,7 +49,7 @@ def _preview_text(cid: int, item: dict, draft: NewsDraft) -> str:
 
 
 def make_cards(cfg: Config, cid: int, draft: NewsDraft, breaking: bool = False) -> list[str]:
-    """카드 이미지를 만든다. AI 배경이 켜져 있으면 만들어서 깔고, 실패하면 기본 배경으로 계속한다."""
+    """뉴스 카드 한 장을 만든다. AI 배경이 켜져 있으면 만들어서 깔고, 실패하면 기본 배경으로 계속한다."""
     out = os.path.join(CARD_DIR, str(cid))
     os.makedirs(out, exist_ok=True)
     bg = None
@@ -58,12 +58,12 @@ def make_cards(cfg: Config, cid: int, draft: NewsDraft, breaking: bool = False) 
             bg = generate_background(cfg, draft.image_prompt, os.path.join(out, "bg.png"))
         except Exception as e:
             print(f"background error: {e}")
-    return render_cards(draft, out, cfg.font_path, cfg.card_footer, cfg.brand_name, breaking, bg)
+    return [render_card(draft, out, cfg.font_path, bg, cfg.ai_label, breaking)]
 
 
 def _send_review(cfg: Config, tg: Telegram, cid: int, item: dict, draft: NewsDraft, breaking: bool = False) -> None:
     paths = make_cards(cfg, cid, draft, breaking)
-    tg.send_album(paths, f"#{cid} 카드 {len(paths)}장")
+    tg.send_photo(paths[0], f"#{cid} 카드")
     tg.send(
         ("🚨 속보 후보\n" if breaking else "") + _preview_text(cid, item, draft),
         [("✅ 승인", f"ok:{cid}"), ("🔄 다시 쓰기", f"re:{cid}"), ("❌ 폐기", f"no:{cid}")],
@@ -101,6 +101,7 @@ def propose_breaking(cfg: Config, queue: Queue, tg: Telegram) -> int:
             if cfg.fetch_body:
                 data["body"] = fetch_body(item.link)
             draft = generate_news_draft(cfg, data)
+            draft.badge = "속보"  # 속보 감시로 들어온 기사는 항상 속보 배지
             cid = queue.add_candidate(data, asdict(draft), kind="breaking")
             _send_review(cfg, tg, cid, data, draft, breaking=True)
             sent += 1

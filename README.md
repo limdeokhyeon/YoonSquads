@@ -28,7 +28,7 @@ python -m insta_agent.cli run             # 실제 발행
 ## 테스트
 `python -m pytest`
 
-## 뉴스 → 텔레그램 검토 → 자동 발행
+## 뉴스 → 텔레그램 검토 → 자동 발행 (한 장짜리 뉴스 카드)
 ```bash
 python -m insta_agent.cli serve
 ```
@@ -65,3 +65,10 @@ python -m insta_agent.cli serve
 ```bash
 bash update.sh
 ```
+
+## 카드 형식
+사진 한 장을 꽉 채우고 아래쪽에 `[배지] 작은 문구 / 큰 제목 / 부제 / 출처: 언론사 | 날짜`를 얹은 4:5 한 장 카드입니다.
+- 사진은 `AI_IMAGES=true` + `OPENAI_API_KEY`일 때 GPT 이미지로 만들고, 없으면 남색 그라데이션
+- 실존 인물 얼굴은 생성하지 않고 연단·마이크·건물 같은 상징 장면으로 대신함, 기사 사진은 쓰지 않음
+- AI 배경에는 우측 상단에 `AI 생성 이미지` 표시(`AI_LABEL=false`로 끌 수 있음)
+- 캡션에는 핵심 3줄과 출처 링크가 들어갑니다

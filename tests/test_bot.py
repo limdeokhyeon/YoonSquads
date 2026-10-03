@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from insta_agent import bot
-from insta_agent.cards import render_cards
+from insta_agent.cards import render_card
 from insta_agent.config import Config
 from insta_agent.content import NewsDraft, parse_news_draft
 from insta_agent.news import clean, collect
@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", card_footer="f", brand_name="@b", ai_images=False, openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_max_per_day=2, breaking_max_age_min=90,
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, ai_images=False, openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_max_per_day=2, breaking_max_age_min=90,
     )
     base.update(kw)
     return Config(**base)
@@ -48,7 +48,7 @@ def test_collect_alternates_keywords_and_dedupes(monkeypatch):
 
 def test_parse_news_draft():
     d = parse_news_draft('{"headline":"제목","bullets":["가","나"],"caption":"본문","hashtags":["#x"]}', "http://l")
-    assert d.hashtags == ["x"] and "출처: http://l" in d.full_text()
+    assert d.hashtags == ["x"] and "출처: 기사 원문 http://l" in d.full_text()
     with pytest.raises(ValueError):
         parse_news_draft('{"headline":"t","bullets":[],"caption":"c"}', "l")
 
@@ -79,26 +79,15 @@ def test_reject_and_approve_flow(monkeypatch):
     q, tg = Queue(":memory:"), FakeTG()
     draft = NewsDraft("제목", ["가"], "본문", ["t"], "http://l").__dict__
     cid = q.add_candidate({"title": "t", "summary": "s", "link": "http://l", "pub_date": ""}, draft)
-    monkeypatch.setattr(bot, "render_cards", lambda *a, **k: ["a.png", "b.png"])
+    monkeypatch.setattr(bot, "render_card", lambda *a, **k: "a.png")
     monkeypatch.setattr(bot.os, "makedirs", lambda *a, **k: None)
     monkeypatch.setattr(bot, "upload_image", lambda cfg, p: f"https://img/{p}")
     bot.handle_update(make_cfg(), q, tg, _update(1, 1, f"ok:{cid}"))
     post = q.list("pending")[0]
-    assert post.image_urls == ["https://img/a.png", "https://img/b.png"]
+    assert post.image_urls == ["https://img/a.png"]  # 카드는 한 장
     assert q.get_candidate(cid)["status"] == "approved"
     bot.handle_update(make_cfg(), q, tg, _update(1, 1, f"ok:{cid}"))  # 중복 승인 방지
     assert len(q.list("pending")) == 1
-
-
-def test_render_cards(tmp_path):
-    from insta_agent.cards import FONT_CANDIDATES
-    import os
-
-    font = next((p for p in FONT_CANDIDATES + ["/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"] if os.path.exists(p)), None)
-    if not font:
-        pytest.skip("한글 폰트 없음")
-    paths = render_cards(NewsDraft("임신 초기 영양제 가이드", ["엽산 챙기기", "카페인 줄이기"], "c", [], "l"), str(tmp_path), font)
-    assert all(os.path.getsize(p) > 1000 for p in paths)
 
 
 def test_search_news_uses_api_hub():
@@ -244,13 +233,13 @@ def test_breaking_daily_cap_and_instant_publish(monkeypatch):
     from insta_agent.news import NewsItem
 
     q, tg = Queue(":memory:"), FakeTG()
-    tg.send_album = lambda *a, **k: None
+    tg.send_photo = lambda *a, **k: None
     now = datetime.now(timezone.utc)
     from email.utils import format_datetime
     mk = lambda t, n: NewsItem(t, "s", f"http://{n}", format_datetime(now))
     monkeypatch.setattr(bot, "collect_breaking", lambda cfg, seen, recent, limit: [mk("속보 가나다 사건", 1), mk("속보 완전히 다른 라마바 일", 2), mk("속보 셋째 아자차", 3)][:limit])
     monkeypatch.setattr(bot, "generate_news_draft", lambda cfg, item, fb="": NewsDraft("제목", ["가"], "본문", ["t"], item["link"]))
-    monkeypatch.setattr(bot, "render_cards", lambda *a, **k: ["a.png", "b.png"])
+    monkeypatch.setattr(bot, "render_card", lambda *a, **k: "a.png")
     monkeypatch.setattr(bot.os, "makedirs", lambda *a, **k: None)
     monkeypatch.setattr(bot, "upload_image", lambda cfg, p: "https://img/" + p)
     cfg = make_cfg()  # 하루 상한 2
@@ -330,25 +319,11 @@ def test_publishing_limit_parses_quota():
     assert c.publishing_limit() == {"quota_usage": 2, "quota_total": 50}
 
 
-def test_render_cards_makes_cover_points_and_source(tmp_path):
-    import os
-    from insta_agent.cards import FONT_CANDIDATES
-
-    font = next((p for p in FONT_CANDIDATES + ["/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"] if os.path.exists(p)), None)
-    if not font:
-        pytest.skip("한글 폰트 없음")
-    d = NewsDraft("제목이 아주 길어서 여러 줄로 나뉘어야 하는 속보 헤드라인입니다", ["하나", "둘", "셋"], "c", [], "https://www.example.com/a")
-    paths = render_cards(d, str(tmp_path), font, "f", "@b", breaking=True)
-    assert [os.path.basename(p) for p in paths] == ["1_cover.png", "2_point.png", "3_point.png", "4_point.png", "5_source.png"]
-    from PIL import Image
-    assert Image.open(paths[0]).size == (1080, 1350)
-
-
 def test_ai_background_falls_back_when_generation_fails(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     got = {}
     monkeypatch.setattr(bot, "generate_background", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("quota")))
-    monkeypatch.setattr(bot, "render_cards", lambda draft, out, font, foot, brand, breaking, bg: got.setdefault("bg", bg) or ["x.png"])
+    monkeypatch.setattr(bot, "render_card", lambda draft, out, font, bg, label, breaking: got.setdefault("bg", bg) or "x.png")
     cfg = make_cfg(ai_images=True, openai_key="k")
     bot.make_cards(cfg, 1, NewsDraft("h", ["b"], "c", [], "l"))
     assert got["bg"] is None  # 실패해도 기본 배경으로 계속
@@ -370,3 +345,57 @@ def test_generate_background_decodes_b64(tmp_path):
 
     out = generate_background(make_cfg(openai_key="k"), "a blue shape", str(tmp_path / "bg.png"), http=H())
     assert open(out, "rb").read() == b"PNGDATA"
+
+
+def _font():
+    import os
+    from insta_agent.cards import FONT_CANDIDATES
+
+    return next((p for p in FONT_CANDIDATES + ["/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"] if os.path.exists(p)), None)
+
+
+def test_render_card_single_image(tmp_path):
+    font = _font()
+    if not font:
+        pytest.skip("한글 폰트 없음")
+    from PIL import Image
+
+    d = NewsDraft("북한 “저고도 비행 궤도 변경 능력 보유”", ["a"], "c", [], "https://x", badge="속보", kicker="합참 발표", subhead="‘AI 도입’ 상기 필요", source_name="MBN")
+    path = render_card(d, str(tmp_path), font, breaking=True)
+    assert path.endswith("card.png") and Image.open(path).size == (1080, 1350)
+
+
+def test_render_card_handles_very_long_headline_and_ai_label(tmp_path):
+    font = _font()
+    if not font:
+        pytest.skip("한글 폰트 없음")
+    from PIL import Image
+
+    bg = tmp_path / "bg.png"
+    Image.new("RGB", (1024, 1536), (30, 90, 160)).save(bg)
+    d = NewsDraft("아주 긴 제목 " * 30, ["a"], "c", [], "https://x", subhead="부제 " * 60)
+    path = render_card(d, str(tmp_path / "out"), font, str(bg), ai_label=True)
+    assert Image.open(path).size == (1080, 1350)  # 넘쳐도 깨지지 않고 한 장으로 나온다
+
+
+def test_outlet_name_from_domain():
+    from insta_agent.outlets import outlet_name
+
+    assert outlet_name("https://news.mbn.co.kr/view?x=1") == "MBN"
+    assert outlet_name("https://www.imaeil.com/page/view/2026") == "매일신문"
+    assert outlet_name("https://unknown.example.org/a") == "unknown.example.org"
+
+
+def test_news_draft_new_fields_and_full_text():
+    d = parse_news_draft(
+        '{"badge":"단독","kicker":"금융보안원","headline":"은행 해킹","subhead":"AI 도구 흔적","bullets":["가","나"],"caption":"본문","hashtags":["x"],"image_prompt":"p"}',
+        "http://l", "헤럴드경제",
+    )
+    assert (d.badge, d.kicker, d.subhead, d.source_name) == ("단독", "금융보안원", "AI 도구 흔적", "헤럴드경제")
+    txt = d.full_text()
+    assert "• 가" in txt and "출처: 헤럴드경제 http://l" in txt
+
+
+def test_old_stored_draft_without_new_fields_still_loads():
+    d = NewsDraft(**{"headline": "h", "bullets": ["b"], "caption": "c", "hashtags": [], "source_link": "l"})
+    assert d.badge == "" and d.source_name == ""
