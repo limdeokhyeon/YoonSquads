@@ -422,10 +422,11 @@ def test_fetch_unsplash_saves_photo_triggers_download_and_returns_credit(tmp_pat
             return R()
 
     out = tmp_path / "bg.png"
-    credit = fetch_unsplash(make_cfg(unsplash_key="k"), "missile launch sea", str(out), http=H())
+    credit, location = fetch_unsplash(make_cfg(unsplash_key="k"), "missile launch sea", str(out), http=H())
     assert out.read_bytes() == b"JPEGDATA"
     assert "w=1080&h=1350&fit=crop" in calls[1][0]          # 카드 크기로 잘라 받기
-    assert calls[2][0].endswith("/photos/1/download?ixid=abc")  # 이용 조건: 다운로드 집계 호출
+    assert len(calls) == 2                                      # 검색 + 사진 받기뿐, 아직 집계는 호출하지 않는다
+    assert location.endswith("/photos/1/download?ixid=abc")
     assert credit == "Jane Doe / Unsplash https://unsplash.com/@jane?utm_source=yoonsquads_news&utm_medium=referral"
 
 
@@ -436,7 +437,7 @@ def test_unsplash_credit_goes_into_caption_and_background_is_reused(monkeypatch,
     def fake_fetch(cfg, query, path):
         fetched.append(query)
         open(path, "wb").write(b"x")
-        return "Jane / Unsplash http://u"
+        return "Jane / Unsplash http://u", "http://dl"
 
     seen = []
     monkeypatch.setattr(bot, "fetch_unsplash", fake_fetch)
@@ -460,3 +461,22 @@ def test_legacy_ai_images_flag_still_means_ai(monkeypatch):
     assert Config.load().photo_source == "ai"
     monkeypatch.setenv("PHOTO_SOURCE", "unsplash")
     assert Config.load().photo_source == "unsplash"
+
+
+def test_unsplash_download_tracked_only_on_approval(monkeypatch, tmp_path):
+    from insta_agent.stock import track_download
+
+    monkeypatch.chdir(tmp_path)
+    tracked = []
+    monkeypatch.setattr(bot, "fetch_unsplash", lambda cfg, q, path: (open(path, "wb").write(b"x") and None) or ("J / Unsplash", "http://dl"))
+    monkeypatch.setattr(bot, "track_download", lambda cfg, loc: tracked.append(loc))
+    monkeypatch.setattr(bot, "render_card", lambda *a, **k: "card.png")
+    monkeypatch.setattr(bot, "upload_image", lambda cfg, p: "https://img/x")
+    cfg = make_cfg(photo_source="unsplash", unsplash_key="k")
+    q, tg = Queue(":memory:"), FakeTG()
+    draft = NewsDraft("h", ["b"], "c", [], "l", photo_query="q").__dict__
+    cid = q.add_candidate({"title": "t", "summary": "s", "link": "l", "pub_date": ""}, draft)
+    bot.make_cards(cfg, cid, NewsDraft("h", ["b"], "c", [], "l", photo_query="q"))   # 검토 단계
+    assert tracked == []                                                             # 폐기될 수도 있으니 아직 집계 안 함
+    bot.approve(cfg, q, tg, cid)
+    assert tracked == ["http://dl"]

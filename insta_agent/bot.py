@@ -15,7 +15,7 @@ from .config import Config, update_env
 from .content import NewsDraft, generate_news_draft
 from .hosting import upload_image
 from .images import generate_background
-from .stock import fetch_unsplash
+from .stock import fetch_unsplash, track_download
 from .instagram import InstagramClient
 from .news import collect, collect_breaking
 from .queue import Queue
@@ -57,20 +57,21 @@ def make_cards(cfg: Config, cid: int, draft: NewsDraft, breaking: bool = False, 
     """
     out = os.path.join(CARD_DIR, str(cid))
     os.makedirs(out, exist_ok=True)
-    bg, credit_file = os.path.join(out, "bg.png"), os.path.join(out, "credit.txt")
+    bg, credit_file, dl_file = os.path.join(out, "bg.png"), os.path.join(out, "credit.txt"), os.path.join(out, "download.txt")
     if reuse and os.path.exists(bg):
         if os.path.exists(credit_file):
             draft.photo_credit = open(credit_file, encoding="utf-8").read().strip()
     else:
-        for f in (bg, credit_file):
+        for f in (bg, credit_file, dl_file):
             if os.path.exists(f):
                 os.remove(f)
         try:
             if cfg.photo_source == "ai" and cfg.openai_key:
                 generate_background(cfg, draft.image_prompt, bg)
             elif cfg.photo_source == "unsplash" and cfg.unsplash_key:
-                draft.photo_credit = fetch_unsplash(cfg, draft.photo_query, bg)
+                draft.photo_credit, location = fetch_unsplash(cfg, draft.photo_query, bg)
                 open(credit_file, "w", encoding="utf-8").write(draft.photo_credit)
+                open(dl_file, "w", encoding="utf-8").write(location)
         except Exception as e:
             print(f"background error: {e}")
     has_bg = os.path.exists(bg)
@@ -134,6 +135,10 @@ def approve(cfg: Config, queue: Queue, tg: Telegram, cid: int) -> str:
     draft = _draft(cand["draft"])
     paths = make_cards(cfg, cid, draft, cand.get("kind") == "breaking", reuse=True)
     urls = [upload_image(cfg, p) for p in paths]
+    dl_file = os.path.join(CARD_DIR, str(cid), "download.txt")
+    if os.path.exists(dl_file):  # Unsplash 사진을 실제로 쓰는 시점에 다운로드 집계
+        track_download(cfg, open(dl_file, encoding="utf-8").read().strip())
+        os.remove(dl_file)
     if cand.get("kind") == "breaking":  # 속보는 시간이 생명이라 바로 발행
         slot = datetime.now(KST) + timedelta(minutes=2)
     else:
