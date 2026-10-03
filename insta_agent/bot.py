@@ -15,6 +15,7 @@ from .config import Config, update_env
 from .content import NewsDraft, generate_news_draft
 from .hosting import upload_image
 from .images import generate_background
+from .stock import fetch_unsplash
 from .instagram import InstagramClient
 from .news import collect, collect_breaking
 from .queue import Queue
@@ -48,17 +49,32 @@ def _preview_text(cid: int, item: dict, draft: NewsDraft) -> str:
     )
 
 
-def make_cards(cfg: Config, cid: int, draft: NewsDraft, breaking: bool = False) -> list[str]:
-    """뉴스 카드 한 장을 만든다. AI 배경이 켜져 있으면 만들어서 깔고, 실패하면 기본 배경으로 계속한다."""
+def make_cards(cfg: Config, cid: int, draft: NewsDraft, breaking: bool = False, reuse: bool = False) -> list[str]:
+    """뉴스 카드 한 장을 만든다. 배경은 설정(PHOTO_SOURCE)에 따라 AI 이미지/Unsplash 사진/그라데이션.
+
+    reuse=True면 검토 때 이미 받아 둔 배경을 다시 쓴다(승인 때 사진이 바뀌거나 비용이 또 나가지 않도록).
+    사진을 못 구하면 기본 배경으로 계속한다.
+    """
     out = os.path.join(CARD_DIR, str(cid))
     os.makedirs(out, exist_ok=True)
-    bg = None
-    if cfg.ai_images and cfg.openai_key:
+    bg, credit_file = os.path.join(out, "bg.png"), os.path.join(out, "credit.txt")
+    if reuse and os.path.exists(bg):
+        if os.path.exists(credit_file):
+            draft.photo_credit = open(credit_file, encoding="utf-8").read().strip()
+    else:
+        for f in (bg, credit_file):
+            if os.path.exists(f):
+                os.remove(f)
         try:
-            bg = generate_background(cfg, draft.image_prompt, os.path.join(out, "bg.png"))
+            if cfg.photo_source == "ai" and cfg.openai_key:
+                generate_background(cfg, draft.image_prompt, bg)
+            elif cfg.photo_source == "unsplash" and cfg.unsplash_key:
+                draft.photo_credit = fetch_unsplash(cfg, draft.photo_query, bg)
+                open(credit_file, "w", encoding="utf-8").write(draft.photo_credit)
         except Exception as e:
             print(f"background error: {e}")
-    return [render_card(draft, out, cfg.font_path, bg, cfg.ai_label, breaking)]
+    has_bg = os.path.exists(bg)
+    return [render_card(draft, out, cfg.font_path, bg if has_bg else None, cfg.ai_label and cfg.photo_source == "ai", breaking)]
 
 
 def _send_review(cfg: Config, tg: Telegram, cid: int, item: dict, draft: NewsDraft, breaking: bool = False) -> None:
@@ -116,7 +132,7 @@ def approve(cfg: Config, queue: Queue, tg: Telegram, cid: int) -> str:
     if not cand or cand["status"] != "proposed":
         return "이미 처리된 후보입니다"
     draft = _draft(cand["draft"])
-    paths = make_cards(cfg, cid, draft, cand.get("kind") == "breaking")
+    paths = make_cards(cfg, cid, draft, cand.get("kind") == "breaking", reuse=True)
     urls = [upload_image(cfg, p) for p in paths]
     if cand.get("kind") == "breaking":  # 속보는 시간이 생명이라 바로 발행
         slot = datetime.now(KST) + timedelta(minutes=2)

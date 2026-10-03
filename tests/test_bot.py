@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, ai_images=False, openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_max_per_day=2, breaking_max_age_min=90,
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_max_per_day=2, breaking_max_age_min=90,
     )
     base.update(kw)
     return Config(**base)
@@ -324,7 +324,7 @@ def test_ai_background_falls_back_when_generation_fails(monkeypatch, tmp_path):
     got = {}
     monkeypatch.setattr(bot, "generate_background", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("quota")))
     monkeypatch.setattr(bot, "render_card", lambda draft, out, font, bg, label, breaking: got.setdefault("bg", bg) or "x.png")
-    cfg = make_cfg(ai_images=True, openai_key="k")
+    cfg = make_cfg(photo_source="ai", openai_key="k")
     bot.make_cards(cfg, 1, NewsDraft("h", ["b"], "c", [], "l"))
     assert got["bg"] is None  # 실패해도 기본 배경으로 계속
 
@@ -399,3 +399,64 @@ def test_news_draft_new_fields_and_full_text():
 def test_old_stored_draft_without_new_fields_still_loads():
     d = NewsDraft(**{"headline": "h", "bullets": ["b"], "caption": "c", "hashtags": [], "source_link": "l"})
     assert d.badge == "" and d.source_name == ""
+
+
+def test_fetch_unsplash_saves_photo_triggers_download_and_returns_credit(tmp_path):
+    from insta_agent.stock import fetch_unsplash
+
+    calls = []
+
+    class R:
+        content = b"JPEGDATA"
+        def raise_for_status(self): pass
+        def json(self):
+            return {"results": [{
+                "urls": {"raw": "https://images.unsplash.com/photo-1?ixid=abc"},
+                "links": {"download_location": "https://api.unsplash.com/photos/1/download?ixid=abc"},
+                "user": {"name": "Jane Doe", "links": {"html": "https://unsplash.com/@jane"}},
+            }]}
+
+    class H:
+        def get(self, url, headers=None, params=None, timeout=None):
+            calls.append((url, params))
+            return R()
+
+    out = tmp_path / "bg.png"
+    credit = fetch_unsplash(make_cfg(unsplash_key="k"), "missile launch sea", str(out), http=H())
+    assert out.read_bytes() == b"JPEGDATA"
+    assert "w=1080&h=1350&fit=crop" in calls[1][0]          # 카드 크기로 잘라 받기
+    assert calls[2][0].endswith("/photos/1/download?ixid=abc")  # 이용 조건: 다운로드 집계 호출
+    assert credit == "Jane Doe / Unsplash https://unsplash.com/@jane?utm_source=yoonsquads_news&utm_medium=referral"
+
+
+def test_unsplash_credit_goes_into_caption_and_background_is_reused(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    fetched = []
+
+    def fake_fetch(cfg, query, path):
+        fetched.append(query)
+        open(path, "wb").write(b"x")
+        return "Jane / Unsplash http://u"
+
+    seen = []
+    monkeypatch.setattr(bot, "fetch_unsplash", fake_fetch)
+    monkeypatch.setattr(bot, "render_card", lambda draft, out, font, bg, label, breaking: seen.append((bg, label)) or "card.png")
+    cfg = make_cfg(photo_source="unsplash", unsplash_key="k")
+    d1 = NewsDraft("h", ["b"], "c", [], "l", photo_query="bank atm")
+    bot.make_cards(cfg, 7, d1)                       # 검토 때 한 번 받고
+    assert "사진: Jane / Unsplash http://u" in d1.full_text()
+    d2 = NewsDraft("h", ["b"], "c", [], "l", photo_query="bank atm")
+    bot.make_cards(cfg, 7, d2, reuse=True)           # 승인 때는 다시 받지 않는다
+    assert fetched == ["bank atm"] and d2.photo_credit == "Jane / Unsplash http://u"
+    assert all(label is False for _, label in seen)  # Unsplash 사진에는 'AI 생성' 표시를 달지 않는다
+
+
+def test_legacy_ai_images_flag_still_means_ai(monkeypatch):
+    from insta_agent.config import Config
+
+    for k in ("PHOTO_SOURCE",):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("AI_IMAGES", "true")
+    assert Config.load().photo_source == "ai"
+    monkeypatch.setenv("PHOTO_SOURCE", "unsplash")
+    assert Config.load().photo_source == "unsplash"

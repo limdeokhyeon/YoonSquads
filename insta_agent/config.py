@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 
+def _photo_source() -> str:
+    """none(그라데이션) | ai(GPT 이미지) | unsplash(무료 사진). 예전 AI_IMAGES=true 설정도 인식한다."""
+    src = os.getenv("PHOTO_SOURCE", "").lower()
+    if src in ("none", "ai", "unsplash"):
+        return src
+    return "ai" if os.getenv("AI_IMAGES", "false").lower() in ("1", "true", "yes") else "none"
+
+
 def _list(name: str, default: str) -> list[str]:
     return [x.strip() for x in os.getenv(name, default).split(",") if x.strip()]
 
@@ -30,7 +38,8 @@ class Config:
     imgbb_key: str
     font_path: str
     ai_label: bool
-    ai_images: bool
+    photo_source: str
+    unsplash_key: str
     openai_key: str
     openai_image_model: str
     fetch_body: bool
@@ -68,7 +77,8 @@ class Config:
             breaking_max_age_min=int(os.getenv("BREAKING_MAX_AGE_MIN", "90")),
             fetch_body=os.getenv("FETCH_BODY", "false").lower() in ("1", "true", "yes"),
             ai_label=os.getenv("AI_LABEL", "true").lower() in ("1", "true", "yes"),
-            ai_images=os.getenv("AI_IMAGES", "false").lower() in ("1", "true", "yes"),
+            photo_source=_photo_source(),
+            unsplash_key=os.getenv("UNSPLASH_ACCESS_KEY", ""),
             openai_key=os.getenv("OPENAI_API_KEY", ""),
             openai_image_model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"),
         )
