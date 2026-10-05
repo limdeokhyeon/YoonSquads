@@ -10,3 +10,7 @@ fi
 git reset --hard "origin/$BRANCH"
 python3 -m pip install -q -r requirements.txt
 echo "✅ 최신 코드로 업데이트했습니다: $(git log --oneline -1)"
+# 서비스로 등록되어 있으면 새 코드로 다시 시작한다
+if [ -f "$HOME/Library/LaunchAgents/com.yoonsquads.news.plist" ]; then
+  launchctl kickstart -k "gui/$(id -u)/com.yoonsquads.news" && echo "🔁 서비스를 재시작했습니다 (로그: tail -f logs/serve.log)"
+fi
