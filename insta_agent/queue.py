@@ -61,6 +61,9 @@ class Queue:
         self.db.execute(SCHEMA)
         self.db.execute(CANDIDATES)
         self.db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS insights (post_id INTEGER PRIMARY KEY, media_id TEXT, metrics TEXT, fetched_at TEXT)"
+        )
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(candidates)")}
         if "kind" not in cols:  # 기존 DB 마이그레이션
             self.db.execute("ALTER TABLE candidates ADD COLUMN kind TEXT NOT NULL DEFAULT 'daily'")
@@ -115,6 +118,49 @@ class Queue:
         if post_id is not None:
             self.db.execute("UPDATE candidates SET post_id=? WHERE id=?", (post_id, cid))
         self.db.commit()
+
+    # --- 발행 성과(인사이트) ---
+    def posts_needing_insights(self, now: datetime | None = None, min_age_h: int = 24, max_age_days: int = 7) -> list[Post]:
+        """발행 후 24시간~7일 사이이고, 아직 성과를 못 받았거나 마지막으로 받은 지 하루가 지난 글."""
+        now = now or _now()
+        rows = self.db.execute(
+            """SELECT p.* FROM posts p LEFT JOIN insights i ON i.post_id = p.id
+               WHERE p.status='published' AND p.media_id IS NOT NULL AND p.scheduled_at <= ? AND p.scheduled_at >= ?
+                 AND (i.fetched_at IS NULL OR i.fetched_at <= ?)""",
+            (
+                (now - timedelta(hours=min_age_h)).isoformat(),
+                (now - timedelta(days=max_age_days)).isoformat(),
+                (now - timedelta(hours=20)).isoformat(),
+            ),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+    def save_insights(self, post_id: int, media_id: str, metrics: dict, now: datetime | None = None) -> None:
+        self.db.execute(
+            "INSERT INTO insights (post_id, media_id, metrics, fetched_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(post_id) DO UPDATE SET metrics=excluded.metrics, fetched_at=excluded.fetched_at",
+            (post_id, media_id, json.dumps(metrics), (now or _now()).isoformat()),
+        )
+        self.db.commit()
+
+    def performance_rows(self, days: int = 30, now: datetime | None = None) -> list[dict]:
+        """성과가 수집된 글과 그 글의 제목·해시태그·종류. 최신순."""
+        since = ((now or _now()) - timedelta(days=days)).isoformat()
+        rows = self.db.execute(
+            """SELECT p.id AS post_id, p.scheduled_at, i.metrics, c.draft, c.kind
+               FROM insights i JOIN posts p ON p.id = i.post_id LEFT JOIN candidates c ON c.post_id = p.id
+               WHERE p.scheduled_at >= ? ORDER BY p.scheduled_at DESC""",
+            (since,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = json.loads(r["draft"] or "{}")
+            out.append({
+                "post_id": r["post_id"], "at": r["scheduled_at"], "kind": r["kind"] or "daily",
+                "metrics": json.loads(r["metrics"] or "{}"),
+                "headline": d.get("headline", ""), "tags": d.get("hashtags", []), "badge": d.get("badge", ""),
+            })
+        return out
 
     def reject_all_proposed(self) -> int:
         cur = self.db.execute("UPDATE candidates SET status='rejected' WHERE status='proposed'")

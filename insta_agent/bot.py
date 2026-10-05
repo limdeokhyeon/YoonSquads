@@ -13,12 +13,16 @@ from .article import fetch_body
 from .cards import render_card
 from .config import Config, update_env
 from .content import NewsDraft, generate_news_draft
+from .health import Heartbeat
 from .hosting import upload_image
 from .images import generate_background
 from .stock import fetch_unsplash, track_download
 from .instagram import InstagramClient
+from .maintenance import cleanup_cards
 from .news import collect, collect_breaking
 from .queue import Queue
+from .report import build_report, performance_hint
+from .log import log, setup as setup_logging
 from .safety import redact
 from .telegram import Telegram
 
@@ -36,6 +40,11 @@ def next_slot(post_hours: list[int], taken: list[datetime], now: datetime | None
             if slot > now + timedelta(minutes=5) and slot not in taken_set:
                 return slot
     raise RuntimeError("30일 안에 빈 게시 시각이 없습니다")
+
+
+def _style(queue: Queue) -> dict:
+    """새 글을 쓸 때 모델에 알려 줄 것: 최근 글(겹치지 않게)과 성과가 쌓였다면 반응 좋았던/낮았던 글."""
+    return {"recent": queue.recent_styles(), "performance": performance_hint(queue.performance_rows())}
 
 
 def _draft(d: dict) -> NewsDraft:
@@ -74,13 +83,13 @@ def make_cards(cfg: Config, cid: int, draft: NewsDraft, breaking: bool = False, 
                 open(credit_file, "w", encoding="utf-8").write(draft.photo_credit)
                 open(dl_file, "w", encoding="utf-8").write(location)
         except Exception as e:
-            print(f"background error: {redact(e)}")
+            log.warning(f"background error: {redact(e)}")
     has_bg = os.path.exists(bg)
     return [render_card(draft, out, cfg.font_path, bg if has_bg else None, cfg.ai_label and cfg.photo_source == "ai", breaking)]
 
 
-def _send_review(cfg: Config, tg: Telegram, cid: int, item: dict, draft: NewsDraft, breaking: bool = False) -> None:
-    paths = make_cards(cfg, cid, draft, breaking)
+def _send_review(cfg: Config, tg: Telegram, cid: int, item: dict, draft: NewsDraft, breaking: bool = False, reuse: bool = False) -> None:
+    paths = make_cards(cfg, cid, draft, breaking, reuse=reuse)
     tg.send_photo(paths[0], f"#{cid} 카드")
     tg.send(
         ("🚨 속보 후보\n" if breaking else "") + _preview_text(cid, item, draft),
@@ -96,7 +105,7 @@ def propose(cfg: Config, queue: Queue, tg: Telegram) -> int:
             data = item.to_dict()
             if cfg.fetch_body:
                 data["body"] = fetch_body(item.link)
-            draft = generate_news_draft(cfg, data, recent=queue.recent_styles())
+            draft = generate_news_draft(cfg, data, **_style(queue))
             cid = queue.add_candidate(data, asdict(draft))
             _send_review(cfg, tg, cid, data, draft)
             sent += 1
@@ -118,13 +127,13 @@ def propose_breaking(cfg: Config, queue: Queue, tg: Telegram) -> int:
             data = item.to_dict()
             if cfg.fetch_body:
                 data["body"] = fetch_body(item.link)
-            draft = generate_news_draft(cfg, data, recent=queue.recent_styles())
+            draft = generate_news_draft(cfg, data, **_style(queue))
             draft.badge = "속보"  # 속보 감시로 들어온 기사는 항상 속보 배지
             cid = queue.add_candidate(data, asdict(draft), kind="breaking")
             _send_review(cfg, tg, cid, data, draft, breaking=True)
             sent += 1
         except Exception as e:
-            print(f"breaking error: {redact(e)}")  # 5분마다 반복될 수 있어 텔레그램에는 보내지 않는다
+            log.warning(f"breaking error: {redact(e)}")  # 5분마다 반복될 수 있어 텔레그램에는 보내지 않는다
             queue.add_candidate({**item.to_dict(), "skipped": redact(e)}, {}, kind="breaking_failed")
     return sent
 
@@ -156,7 +165,7 @@ def regenerate(cfg: Config, queue: Queue, tg: Telegram, cid: int, feedback: str 
     if not cand or cand["status"] != "proposed":
         tg.send("이미 처리된 후보입니다")
         return
-    draft = generate_news_draft(cfg, cand["item"], feedback, recent=queue.recent_styles())
+    draft = generate_news_draft(cfg, cand["item"], feedback, **_style(queue))
     queue.update_candidate(cid, draft=asdict(draft))
     _send_review(cfg, tg, cid, cand["item"], draft)
 
@@ -166,7 +175,27 @@ def _ack(tg: Telegram, callback_id: str, text: str = "") -> None:
     try:
         tg.answer_callback(callback_id, text)
     except Exception as e:
-        print(f"callback ack error: {redact(e)}")
+        log.warning(f"callback ack error: {redact(e)}")
+
+
+EDIT_FIELDS = {"캡션": "caption", "제목": "headline", "부제": "subhead", "배지": "badge", "태그": "hashtags"}
+
+
+def edit_candidate(cfg: Config, queue: Queue, tg: Telegram, cid: int, field: str, value: str) -> None:
+    """후보의 캡션·제목·부제·배지·태그를 말씀하신 대로 바꾸고(AI로 다시 쓰지 않음) 같은 사진으로 카드를 다시 보낸다."""
+    cand = queue.get_candidate(cid)
+    if not cand or cand["status"] != "proposed":
+        tg.send("이미 처리된 후보입니다")
+        return
+    draft = _draft(cand["draft"])
+    value = value.strip()
+    if field == "hashtags":
+        tags = [t.lstrip("#") for t in re.split(r"[\s,]+", value) if t.lstrip("#")]
+        draft.hashtags = list(dict.fromkeys(tags))
+    else:
+        setattr(draft, field, value)
+    queue.update_candidate(cid, draft=asdict(draft))
+    _send_review(cfg, tg, cid, cand["item"], draft, cand.get("kind") == "breaking", reuse=True)
 
 
 def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None:
@@ -193,14 +222,24 @@ def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None
             return
         text = (update.get("message") or {}).get("text", "")
         m = re.match(r"^수정\s+#?(\d+)\s+(.+)", text, re.S)
+        e = re.match(r"^(캡션|제목|부제|배지|태그)\s+#?(\d+)\s+(.+)", text, re.S)
         if m:
             regenerate(cfg, queue, tg, int(m.group(1)), m.group(2).strip())
+        elif e:
+            edit_candidate(cfg, queue, tg, int(e.group(2)), EDIT_FIELDS[e.group(1)], e.group(3))
+        elif text.startswith("/report"):
+            tg.send(build_report(queue.performance_rows(7)))
         elif text.startswith("/collect"):
             propose(cfg, queue, tg)
         elif text.startswith("/clear"):
             tg.send(f"🧹 검토 대기 중이던 후보 {queue.reject_all_proposed()}건을 모두 폐기했습니다")
         elif text.startswith(("/start", "/help")):
-            tg.send("명령어\n/collect — 지금 뉴스 수집\n/clear — 검토 대기 후보 모두 폐기\n수정 <번호> <요청> — 예) 수정 3 더 짧게\n버튼으로 승인/다시쓰기/폐기")
+            tg.send(
+                "명령어\n/collect — 지금 뉴스 수집\n/clear — 검토 대기 후보 모두 폐기\n/report — 최근 7일 발행 성과\n\n"
+                "AI로 다시 쓰기: 수정 3 더 짧게\n"
+                "직접 고치기(번호는 후보 번호):\n  캡션 3 새 캡션 내용\n  제목 3 새 제목\n  부제 3 새 부제\n  배지 3 단독\n  태그 3 정치 예산 국회\n"
+                "버튼: 승인 / 다시 쓰기 / 폐기"
+            )
     except Exception as e:
         tg.send(f"⚠️ 처리 중 오류: {redact(e)}")
 
@@ -212,7 +251,7 @@ def _notify(tg: Telegram, text: str) -> None:
     try:
         tg.send(text)
     except Exception as e:
-        print(f"notify error: {redact(e)}")
+        log.warning(f"notify error: {redact(e)}")
 
 
 def run_collect(cfg: Config, queue: Queue, tg: Telegram) -> int:
@@ -247,9 +286,28 @@ def report_results(tg: Telegram, results: list[tuple[int, str]]) -> None:
             try:
                 tg.send(f"❌ #{pid} 발행 실패: {detail[:300]}{warn}", [("🔁 다시 시도", f"rt:{pid}")])
             except Exception as e:
-                print(f"notify error: {redact(e)}")
+                log.warning(f"notify error: {redact(e)}")
         else:
             _notify(tg, f"📤 발행 결과 #{pid}: {result[:300]}")
+
+
+def run_insights(queue: Queue, ig: InstagramClient, tg: Telegram, state: dict, now: datetime | None = None, today=None) -> int:
+    """발행 후 24시간~7일 된 글의 성과(조회·도달·저장·공유 등)를 가져와 저장한다. 하루 몇 번만 돈다."""
+    now = now or datetime.now(timezone.utc)
+    got = 0
+    try:
+        for post in queue.posts_needing_insights(now):
+            metrics = ig.media_insights(post.media_id)
+            if metrics:
+                queue.save_insights(post.id, post.media_id, metrics, now)
+                got += 1
+    except Exception as e:
+        today = today or datetime.now(KST).date()
+        log.warning(f"insights error: {redact(e)}")
+        if state.get("notified_on") != today:
+            state["notified_on"] = today
+            _notify(tg, f"⚠️ 발행 성과를 가져오지 못했어요: {redact(e)}\n토큰에 instagram_business_manage_insights 권한이 있는지 확인하세요 (없으면 성과 분석만 빠지고 나머지는 정상입니다)")
+    return got
 
 
 def report_stuck(queue: Queue, tg: Telegram) -> int:
@@ -290,15 +348,34 @@ def maybe_refresh_token(queue: Queue, ig: InstagramClient, tg: Telegram, now: da
     return True
 
 
+def run_chores(cfg: Config, queue: Queue, ig: InstagramClient, tg: Telegram, state: dict, now: datetime | None = None) -> bool:
+    """몇 시간에 한 번만 도는 관리 작업: 오래된 카드 파일 정리, 발행 성과 수집."""
+    now = now or datetime.now(timezone.utc)
+    last = queue.get_meta("chores_run")
+    if last and now - datetime.fromisoformat(last) < timedelta(hours=6):
+        return False
+    queue.set_meta("chores_run", now.isoformat())
+    removed, freed = cleanup_cards(CARD_DIR, queue, cfg.keep_days)
+    if removed:
+        log.info(f"오래된 카드 {removed}개 정리 ({freed / 1_000_000:.1f}MB 확보)")
+    run_insights(queue, ig, tg, state, now)
+    return True
+
+
 def serve(cfg: Config) -> None:
-    """상시 실행: 텔레그램 응답 처리 + 매일 수집 + 예약 발행."""
+    """상시 실행: 텔레그램 응답 처리 + 매일 수집 + 속보 확인 + 예약 발행 + 성과 수집·정리."""
+    setup_logging()
     queue, tg, ig = Queue(cfg.db_path), Telegram(cfg.telegram_token, cfg.telegram_chat_id), InstagramClient(cfg)
+    heartbeat = Heartbeat(cfg.healthcheck_url)
     offset = None
     # 켤 때마다 후보가 쏟아지지 않도록, 이미 수집 시각이 지났으면 오늘 몫은 건너뛴다
     now0 = datetime.now(KST)
     last_collect = now0.date() if now0.hour >= cfg.collect_hour else None
     last_slot = None
     breaking_state: dict = {}
+    insights_state: dict = {}
+    errors_in_a_row = 0
+    log.info("서버 시작")
     report_stuck(queue, tg)
     _notify(tg, "🤖 봇이 시작되었습니다. /collect 로 지금 수집할 수 있어요." + (f"\n🚨 속보 감시 켜짐: {cfg.breaking_start_hour:02d}:00~{cfg.breaking_end_hour:02d}:00 사이 {cfg.breaking_poll_minutes}분마다 확인, 하루 최대 {cfg.breaking_max_per_day}건" if cfg.breaking_enabled else ""))
     while True:
@@ -317,9 +394,15 @@ def serve(cfg: Config) -> None:
                 last_slot = slot
                 run_breaking(cfg, queue, tg, breaking_state)
             report_results(tg, run_due(queue, ig, max_late=timedelta(hours=cfg.post_max_late_hours)))
+            run_chores(cfg, queue, ig, tg, insights_state)
             for update in tg.get_updates(offset):
                 offset = update["update_id"] + 1
                 handle_update(cfg, queue, tg, update)
+            errors_in_a_row = 0
+            heartbeat.beat()
         except Exception as e:
-            print(f"loop error: {redact(e)}")
+            errors_in_a_row += 1
+            log.warning(f"loop error: {redact(e)}")
+            if errors_in_a_row == 3:  # 몇 번 연속으로 실패할 때만 모니터링에 실패 신호
+                heartbeat.fail(str(e))
             time.sleep(10)

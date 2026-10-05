@@ -58,6 +58,8 @@ class Config:
     breaking_poll_minutes: int
     post_max_late_hours: int
     block_keywords: list[str]
+    healthcheck_url: str
+    keep_days: int
     breaking_start_hour: int
     breaking_end_hour: int
     breaking_max_per_day: int
@@ -89,6 +91,8 @@ class Config:
             breaking_poll_minutes=int(os.getenv("BREAKING_POLL_MINUTES", "5")),
             post_max_late_hours=int(os.getenv("POST_MAX_LATE_HOURS", "6")),
             block_keywords=_block_keywords(),
+            healthcheck_url=os.getenv("HEALTHCHECK_URL", ""),
+            keep_days=int(os.getenv("KEEP_DAYS", "14")),
             breaking_start_hour=int(os.getenv("BREAKING_START_HOUR", "0")),
             breaking_end_hour=int(os.getenv("BREAKING_END_HOUR", "24")),
             breaking_max_per_day=int(os.getenv("BREAKING_MAX_PER_DAY", "5")),

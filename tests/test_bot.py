@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, brand_hashtag="", photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, post_max_late_hours=6, block_keywords=["자살", "성폭행", "시신"], breaking_start_hour=0, breaking_end_hour=24, breaking_max_per_day=2, breaking_max_age_min=90,
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, brand_hashtag="", photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, post_max_late_hours=6, block_keywords=["자살", "성폭행", "시신"], healthcheck_url="", keep_days=14, breaking_start_hour=0, breaking_end_hour=24, breaking_max_per_day=2, breaking_max_age_min=90,
     )
     base.update(kw)
     return Config(**base)
@@ -766,3 +766,157 @@ def test_failed_post_gets_retry_button_and_requeue_works():
     bot.handle_update(make_cfg(), q, FakeTG(), _update(1, 1, f"rt:{pid}"))      # 버튼을 누르면
     assert q.list()[0].status == "pending" and [p.id for p in q.due()] == [pid]  # 다시 발행 대상이 된다
     assert q.requeue(pid) is False                                                # 이미 대기 중이면 아무 일도 없음
+
+
+# ---------- 4. 서버 생존 신고 ----------
+def test_heartbeat_pings_on_interval_and_ignores_failures():
+    from insta_agent.health import Heartbeat
+
+    calls, now = [], [0.0]
+
+    class H:
+        def get(self, url, timeout): calls.append(("get", url))
+        def post(self, url, data, timeout): calls.append(("post", url, data))
+
+    hb = Heartbeat("https://hc-ping.com/abc", interval=300, http=H(), clock=lambda: now[0])
+    assert hb.beat() is True and hb.beat() is False        # 방금 보냈으니 이번 루프는 건너뜀
+    now[0] = 301
+    assert hb.beat() is True and len([c for c in calls if c[0] == "get"]) == 2
+    hb.fail("oops /bot123456:AAAAAAAAAAAAAAAAAAAAAAAAA")
+    assert calls[-1][1] == "https://hc-ping.com/abc/fail" and "AAAAAAAA" not in calls[-1][2]
+
+    class Down:
+        def get(self, url, timeout): raise RuntimeError("down")
+    assert Heartbeat("https://x", http=Down()).beat() is False   # 모니터링이 안 돼도 서버는 계속
+    assert Heartbeat("").beat() is False                         # 주소가 없으면 아무것도 안 함
+
+
+# ---------- 5. 파일 정리 ----------
+def test_cleanup_removes_old_cards_but_keeps_recent_and_pending(tmp_path):
+    import os, time
+    from insta_agent.maintenance import cleanup_cards
+
+    q = Queue(":memory:")
+    cards = tmp_path / "cards"
+    for name in ("1", "2", "3", "4"):
+        d = cards / name; d.mkdir(parents=True); (d / "card.png").write_bytes(b"x" * 1000)
+    q.add_candidate({"link": "a"}, {"caption": "c"})            # id 1: 검토 대기
+    q.update_candidate(q.add_candidate({"link": "b"}, {"caption": "c"}), status="rejected")   # id 2
+    now = time.time()
+    old, fresh = now - 20 * 86400, now - 2 * 86400
+    for name, t in (("1", old), ("2", old), ("3", old), ("4", fresh)):
+        os.utime(cards / name, (t, t))
+    removed, freed = cleanup_cards(str(cards), q, keep_days=14, now=now)
+    assert removed == 2 and freed == 2000                 # 2(폐기됨)와 3(후보 기록 없음)만 삭제
+    assert sorted(os.listdir(cards)) == ["1", "4"]       # 1은 아직 검토 대기라 3배 기간까지 보관, 4는 최근
+
+
+def test_rotating_log_stays_small(tmp_path):
+    from insta_agent import log as logmod
+
+    for h in list(logmod.log.handlers):
+        logmod.log.removeHandler(h)
+    logmod.setup(str(tmp_path / "logs"))
+    for i in range(30000):
+        logmod.log.info("x" * 100)
+    for h in logmod.log.handlers:
+        h.flush()
+    sizes = [f.stat().st_size for f in (tmp_path / "logs").iterdir()]
+    assert max(sizes) <= 1_000_200 and len(sizes) <= 4    # 파일 하나 1MB, 백업 포함 4개까지만
+
+
+# ---------- 6. 성과 수집·보고·학습 ----------
+def test_media_insights_parses_and_falls_back_per_metric():
+    from insta_agent.instagram import InstagramClient
+
+    def item(name, v): return {"name": name, "values": [{"value": v}]}
+
+    class S:
+        def request(self, method, url, params, timeout):
+            if "," in params["metric"]:                         # 한꺼번에 요청하면 일부 미지원 → 오류
+                return _Resp(400, {"error": {"message": "metric not supported", "code": 100}})
+            if params["metric"] == "shares":
+                return _Resp(400, {"error": {"message": "unsupported", "code": 100}})
+            return _Resp(200, {"data": [item(params["metric"], 10)]})
+
+    out = InstagramClient(make_cfg(ig_access_token="IGAAx"), session=S()).media_insights("m1")
+    assert out["views"] == 10 and "shares" not in out and len(out) == 6
+
+
+def test_run_insights_saves_for_posts_older_than_a_day_and_reports_missing_permission_once():
+    from datetime import date
+
+    q, tg, state = Queue(":memory:"), FakeTG(), {}
+    now = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
+    young = q.add("방금", ["u"], now - timedelta(hours=3)); q.mark_published(young, "m_young")
+    ripe = q.add("하루 지남", ["u"], now - timedelta(hours=30)); q.mark_published(ripe, "m_ripe")
+
+    class IG:
+        def media_insights(self, media_id): return {"views": 100, "reach": 80}
+    assert bot.run_insights(q, IG(), tg, state, now) == 1            # 24시간 지난 글만
+    assert q.posts_needing_insights(now) == []                      # 방금 받았으니 오늘은 다시 안 받음
+    ids = [p.id for p in q.posts_needing_insights(now + timedelta(hours=21))]
+    assert ripe in ids and young in ids                             # 하루쯤 뒤엔 갱신 대상, 방금 올린 글도 24시간이 지나 대상이 됨
+
+    from insta_agent.instagram import InstagramError
+    class Denied:
+        def media_insights(self, media_id): raise InstagramError("(#10) permission", code=10)
+    later = now + timedelta(days=1)
+    for _ in range(2):
+        bot.run_insights(q, Denied(), tg, state, later, today=date(2026, 10, 11))
+    assert len([m for m in tg.sent if "성과를 가져오지 못했어요" in m]) == 1   # 권한 안내는 하루 한 번
+
+
+def test_report_and_learning_hint():
+    from insta_agent.report import build_report, performance_hint
+
+    assert "아직 성과가 수집된 글이 없어요" in build_report([])
+    rows = [{"post_id": i, "at": "x", "kind": "breaking" if i % 2 else "daily", "badge": "", "headline": f"제목{i}",
+             "tags": ["정치", f"t{i}"], "metrics": {"views": 100 * (i + 1), "reach": 50, "saved": i, "shares": 1, "likes": 3}} for i in range(6)]
+    text = build_report(rows)
+    assert "제목5" in text and "속보 vs 일반" in text and "#정치" in text and "6건" in text
+    hint = performance_hint(rows)
+    assert hint["best"][0] == ("제목5", 600) and hint["worst"][-1] == ("제목0", 100)
+    assert performance_hint(rows[:4]) is None                       # 표본이 적으면 학습에 쓰지 않음
+
+
+def test_performance_feeds_prompt_and_report_command(monkeypatch):
+    from insta_agent import content
+
+    q, tg = Queue(":memory:"), FakeTG()
+    now = datetime.now(timezone.utc)
+    for i in range(5):
+        pid = q.add(f"c{i}", ["u"], now - timedelta(days=2)); q.mark_published(pid, f"m{i}")
+        cid = q.add_candidate({"link": f"l{i}", "title": "t"}, {"caption": "c", "hashtags": ["a"], "headline": f"헤드라인{i}"})
+        q.update_candidate(cid, status="approved", post_id=pid)
+        q.save_insights(pid, f"m{i}", {"views": 1000 * (i + 1)}, now)
+    seen = {}
+    monkeypatch.setattr(content, "complete", lambda cfg, system, user, max_tokens=1500: seen.setdefault("u", user) and '{"badge":"","headline":"h","subhead":"","bullets":["b"],"caption":"c","hashtags":["x"],"photo_query":"","image_prompt":""}')
+    content.generate_news_draft(make_cfg(), {"title": "t", "summary": "s", "link": "l"}, **bot._style(q))
+    assert "반응이 좋았던 글" in seen["u"] and "헤드라인4" in seen["u"] and "반응이 낮았던 글" in seen["u"]
+    bot.handle_update(make_cfg(), q, tg, {"message": {"text": "/report", "chat": {"id": 1}, "from": {"id": 1}}})
+    assert "📊 최근 7일 성과" in tg.sent[-1]
+
+
+# ---------- 7. 텔레그램에서 직접 수정 ----------
+def test_direct_edit_commands_change_fields_without_ai_and_keep_photo(monkeypatch):
+    q, tg = Queue(":memory:"), FakeTG()
+    cid = q.add_candidate({"title": "t", "summary": "s", "link": "l"}, NewsDraft("원래 제목", ["b"], "원래 캡션", ["a", "b"], "l", badge="속보").__dict__)
+    shown = []
+    monkeypatch.setattr(bot, "_send_review", lambda cfg, tg_, cid_, item, draft, breaking=False, reuse=False: shown.append((draft, reuse)))
+    monkeypatch.setattr(bot, "generate_news_draft", lambda *a, **k: (_ for _ in ()).throw(AssertionError("AI를 부르면 안 됨")))
+
+    def send(text):
+        bot.handle_update(make_cfg(), q, tg, {"message": {"text": text, "chat": {"id": 1}, "from": {"id": 1}}})
+    send(f"캡션 {cid} 새 캡션\n두 줄도 됩니다")
+    send(f"제목 #{cid} 새 제목")
+    send(f"배지 {cid} 단독")
+    send(f"태그 {cid} #정치, 예산 #정치 국회")
+    d = NewsDraft(**q.get_candidate(cid)["draft"])
+    assert d.caption == "새 캡션\n두 줄도 됩니다" and d.headline == "새 제목" and d.badge == "단독"
+    assert d.hashtags == ["정치", "예산", "국회"]                     # '#' 제거, 쉼표·공백 구분, 중복 제거
+    assert len(shown) == 4 and all(reuse for _, reuse in shown)     # 매번 같은 사진으로 카드를 다시 보냄
+
+    q.update_candidate(cid, status="approved")
+    send(f"캡션 {cid} 승인 뒤에는 못 고침")
+    assert tg.sent[-1] == "이미 처리된 후보입니다"

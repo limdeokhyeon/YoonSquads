@@ -8,6 +8,7 @@ from __future__ import annotations
 import requests
 
 from .config import Config
+from .log import log
 from .safety import redact
 
 API = "https://api.unsplash.com"
@@ -65,4 +66,4 @@ def track_download(cfg: Config, download_location: str, http=requests) -> None:
     try:
         http.get(download_location, headers={"Authorization": f"Client-ID {cfg.unsplash_key}", "Accept-Version": "v1"}, timeout=20)
     except Exception as e:
-        print(f"unsplash track error: {redact(e)}")
+        log.warning(f"unsplash track error: {redact(e)}")

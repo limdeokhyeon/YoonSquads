@@ -158,25 +158,32 @@ def parse_news_draft(raw: str, source_link: str, source_name: str = "") -> NewsD
     )
 
 
-def _recent_note(recent: list[dict] | None) -> str:
-    if not recent:
-        return ""
-    tags = sorted({t for r in recent for t in r["tags"]})
-    hooks = [r["hook"] for r in recent[:6]]
-    return f"최근 사용한 해시태그(쓰지 말 것): {', '.join(tags)}\n최근 캡션 첫 줄(비슷하게 시작하지 말 것): {' / '.join(hooks)}\n"
+def _recent_note(recent: list[dict] | None, performance: dict | None = None) -> str:
+    note = ""
+    if recent:
+        tags = sorted({t for r in recent for t in r["tags"]})
+        hooks = [r["hook"] for r in recent[:6]]
+        note += f"최근 사용한 해시태그(쓰지 말 것): {', '.join(tags)}\n최근 캡션 첫 줄(비슷하게 시작하지 말 것): {' / '.join(hooks)}\n"
+    if performance:
+        fmt = lambda items: ", ".join(f"'{h[:26]}'(조회 {v:,})" for h, v in items)
+        note += (
+            f"우리 계정에서 반응이 좋았던 글(주제·제목 방식을 참고하되 베끼지 말 것): {fmt(performance['best'])}\n"
+            f"반응이 낮았던 글(이런 방식은 피할 것): {fmt(performance['worst'])}\n"
+        )
+    return note
 
 
 OVERLAP_LIMIT = 25  # 원문과 연속 25자 이상 같으면 베낀 것으로 보고 다시 쓴다
 
 
-def generate_news_draft(cfg: Config, item: dict, feedback: str = "", recent: list[dict] | None = None) -> NewsDraft:
+def generate_news_draft(cfg: Config, item: dict, feedback: str = "", recent: list[dict] | None = None, performance: dict | None = None) -> NewsDraft:
     body = item.get("body", "")
 
     def run(fb: str) -> NewsDraft:
         user = (
             f"제목: {item['title']}\n검색 요약: {item['summary']}\n"
             + (f"본문 발췌(참고용, 문장을 옮기지 말 것): {body}\n" if body else "")
-            + _recent_note(recent)
+            + _recent_note(recent, performance)
             + f"브랜드 톤: {cfg.brand_voice}\n수정 요청: {fb or '없음'}"
         )
         return parse_news_draft(complete(cfg, NEWS_SYSTEM, user), item["link"], outlet_name(item.get("originallink") or item["link"]))

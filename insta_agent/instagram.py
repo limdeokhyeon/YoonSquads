@@ -51,6 +51,35 @@ class InstagramClient:
         item = (data.get("data") or [{}])[0]
         return {"quota_usage": item.get("quota_usage"), "quota_total": (item.get("config") or {}).get("quota_total")}
 
+    METRICS = ("views", "reach", "likes", "comments", "saved", "shares", "total_interactions")
+
+    @staticmethod
+    def _parse_insights(data: dict) -> dict:
+        out = {}
+        for item in data.get("data", []):
+            values = item.get("values") or []
+            value = values[0].get("value") if values else (item.get("total_value") or {}).get("value")
+            if isinstance(value, (int, float)):
+                out[item["name"]] = value
+        return out
+
+    def media_insights(self, media_id: str) -> dict:
+        """게시물 성과(조회·도달·좋아요·댓글·저장·공유). 일부 지표가 미지원이면 하나씩 시도해 가능한 것만 모은다.
+
+        권한이 없으면(instagram_business_manage_insights) InstagramError 가 난다."""
+        try:
+            return self._parse_insights(self._call("GET", f"{media_id}/insights", metric=",".join(self.METRICS)))
+        except InstagramError as first:
+            out, last = {}, first
+            for m in self.METRICS:
+                try:
+                    out.update(self._parse_insights(self._call("GET", f"{media_id}/insights", metric=m)))
+                except InstagramError as e:
+                    last = e
+            if not out:
+                raise last
+            return out
+
     def refresh_token(self) -> tuple[str, int]:
         """장기 토큰(60일)을 연장한다. 발급 24시간 후부터 만료 전까지 가능. (새 토큰, 유효 초) 반환."""
         if self.host != "graph.instagram.com":
