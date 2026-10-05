@@ -511,3 +511,28 @@ def test_recent_styles_and_prompt_avoid_repeats(monkeypatch):
     d = content.generate_news_draft(make_cfg(brand_hashtag="나우이슈"), {"title": "t", "summary": "s", "link": "l"}, recent=recent)
     assert "쓰지 말 것)" in seen["user"] and "예산" in seen["user"] and "첫 줄 후크" in seen["user"]
     assert "정치" not in d.hashtags and d.hashtags[-1] == "나우이슈"
+
+
+def test_unsplash_search_relaxes_until_a_photo_is_found(tmp_path):
+    from insta_agent.stock import fetch_unsplash
+
+    searches = []
+    photo = {"urls": {"raw": "https://images.unsplash.com/p?ixid=1"}, "links": {"download_location": "https://api.unsplash.com/photos/1/download"},
+             "user": {"name": "J", "links": {"html": "https://unsplash.com/@j"}}}
+
+    class R:
+        content = b"IMG"
+        def __init__(self, results=None): self.results = results
+        def raise_for_status(self): pass
+        def json(self): return {"results": self.results}
+
+    class H:
+        def get(self, url, headers=None, params=None, timeout=None):
+            if "search/photos" in url:
+                searches.append((params["query"], params.get("orientation")))
+                return R([photo] if params["query"] == "stock exchange" and "orientation" not in params else [])
+            return R()
+
+    credit, _ = fetch_unsplash(make_cfg(unsplash_key="k"), "stock exchange trading floor", str(tmp_path / "bg.png"), http=H())
+    assert searches == [("stock exchange trading floor", "portrait"), ("stock exchange trading floor", None), ("stock exchange", None)]
+    assert credit.startswith("J / Unsplash")
