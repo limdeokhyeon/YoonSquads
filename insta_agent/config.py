@@ -14,6 +14,15 @@ def _photo_source() -> str:
     return "ai" if os.getenv("AI_IMAGES", "false").lower() in ("1", "true", "yes") else "none"
 
 
+def _block_keywords() -> list[str]:
+    """BLOCK_KEYWORDS 가 없으면 기본 목록, 있으면 그 값(빈 값이면 필터 끔)."""
+    raw = os.getenv("BLOCK_KEYWORDS")
+    if raw is None:
+        from .filters import DEFAULT_BLOCK
+        return list(DEFAULT_BLOCK)
+    return [k.strip() for k in raw.split(",") if k.strip()]
+
+
 def _list(name: str, default: str) -> list[str]:
     return [x.strip() for x in os.getenv(name, default).split(",") if x.strip()]
 
@@ -48,6 +57,7 @@ class Config:
     breaking_keywords: list[str]
     breaking_poll_minutes: int
     post_max_late_hours: int
+    block_keywords: list[str]
     breaking_start_hour: int
     breaking_end_hour: int
     breaking_max_per_day: int
@@ -78,6 +88,7 @@ class Config:
             breaking_keywords=_list("BREAKING_KEYWORDS", "속보"),
             breaking_poll_minutes=int(os.getenv("BREAKING_POLL_MINUTES", "5")),
             post_max_late_hours=int(os.getenv("POST_MAX_LATE_HOURS", "6")),
+            block_keywords=_block_keywords(),
             breaking_start_hour=int(os.getenv("BREAKING_START_HOUR", "0")),
             breaking_end_hour=int(os.getenv("BREAKING_END_HOUR", "24")),
             breaking_max_per_day=int(os.getenv("BREAKING_MAX_PER_DAY", "5")),

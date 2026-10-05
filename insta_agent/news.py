@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 import requests
 
 from .config import Config
+from .filters import block_match
 
 # 2026-07 이후 신규 키는 NAVER API HUB(네이버 클라우드 플랫폼)에서 발급되며 주소·헤더가 다르다.
 URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
@@ -50,20 +51,28 @@ def search_news(cfg: Config, keyword: str, limit: int = 30, http=requests) -> li
     ]
 
 
-def collect(cfg: Config, seen: set[str], http=requests) -> list[NewsItem]:
-    """키워드별 최신 기사에서 아직 처리하지 않은 것을 번갈아 골라 daily_count개 반환."""
+def blocked(cfg: Config, item: NewsItem) -> bool:
+    return block_match(f"{item.title} {item.summary}", cfg.block_keywords) is not None
+
+
+def collect(cfg: Config, seen: set[str], recent_titles: list[str] | None = None, http=requests) -> list[NewsItem]:
+    """키워드별 최신 기사에서 아직 처리하지 않은 것을 번갈아 골라 daily_count개 반환.
+
+    같은 사건을 다룬 다른 언론사 기사(제목이 비슷한 것)는 최근 후보와 이번 묶음 안에서 모두 걸러 낸다.
+    """
     # 본문 어딘가에만 키워드가 있는 기사는 제외: 제목이나 요약에 키워드가 있어야 한다
     pools = [
-        [i for i in search_news(cfg, k, http=http) if i.link not in seen and (k in i.title or k in i.summary)]
+        [i for i in search_news(cfg, k, http=http) if i.link not in seen and (k in i.title or k in i.summary) and not blocked(cfg, i)]
         for k in cfg.news_keywords
     ]
-    picked, titles = [], set()
+    picked: list[NewsItem] = []
+    titles = list(recent_titles or [])
     while len(picked) < cfg.daily_count and any(pools):
         for pool in pools:
             while pool:
                 item = pool.pop(0)
-                if item.title not in titles:  # 같은 제목 중복 제거
-                    titles.add(item.title)
+                if not is_similar(item.title, titles):  # 최근 후보·이번 묶음과 같은 사건이면 건너뜀
+                    titles.append(item.title)
                     picked.append(item)
                     break
             if len(picked) >= cfg.daily_count:
@@ -91,7 +100,7 @@ def collect_breaking(cfg: Config, seen: set[str], recent_titles: list[str], limi
         for item in search_news(cfg, kw, http=http):
             if len(picked) >= limit:
                 return picked
-            if item.link in seen or kw not in item.title:
+            if item.link in seen or kw not in item.title or blocked(cfg, item):
                 continue
             try:
                 if parsedate_to_datetime(item.pub_date) < oldest:

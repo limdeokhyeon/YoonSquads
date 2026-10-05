@@ -89,7 +89,7 @@ def _send_review(cfg: Config, tg: Telegram, cid: int, item: dict, draft: NewsDra
 
 
 def propose(cfg: Config, queue: Queue, tg: Telegram) -> int:
-    items = collect(cfg, queue.seen_links())
+    items = collect(cfg, queue.seen_links(), queue.recent_titles())
     sent = 0
     for item in items:
         try:

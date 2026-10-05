@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, brand_hashtag="", photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, post_max_late_hours=6, breaking_start_hour=0, breaking_end_hour=24, breaking_max_per_day=2, breaking_max_age_min=90,
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, brand_hashtag="", photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, post_max_late_hours=6, block_keywords=["자살", "성폭행", "시신"], breaking_start_hour=0, breaking_end_hour=24, breaking_max_per_day=2, breaking_max_age_min=90,
     )
     base.update(kw)
     return Config(**base)
@@ -646,3 +646,43 @@ def test_breaking_failure_reported_once_per_day(monkeypatch):
     assert len([m for m in tg.sent if "속보 확인 실패" in m]) == 1
     bot.run_breaking(make_cfg(), q, tg, state, today=date(2026, 10, 7))   # 다음 날엔 다시 알린다
     assert len([m for m in tg.sent if "속보 확인 실패" in m]) == 2
+
+
+def test_block_keywords_ignore_spaces_and_match_summary():
+    from insta_agent.filters import block_match, DEFAULT_BLOCK
+
+    assert block_match("극단적 선택 시도한 40대", ["극단적선택"]) == "극단적선택"
+    assert block_match("평범한 경제 기사", ["자살"]) is None
+    assert block_match("정상 제목", []) is None
+    assert "자살" in DEFAULT_BLOCK and "성범죄" in DEFAULT_BLOCK
+
+
+def test_collect_skips_blocked_and_same_event_across_outlets(monkeypatch):
+    from insta_agent import news
+    from insta_agent.news import NewsItem
+
+    items = [
+        NewsItem("국회 예산안 처리 착수", "정부 예산", "http://1", "d"),
+        NewsItem("국회, 예산안 처리 착수", "정부 예산", "http://2", "d"),            # 같은 사건(다른 언론사)
+        NewsItem("정치권 소식: 40대 극단적 선택 논란", "자살 관련", "http://3", "d"),    # 제외 키워드
+        NewsItem("환율 급등에 정치권 대응 논의", "정치 환율", "http://4", "d"),
+    ]
+    monkeypatch.setattr(news, "search_news", lambda cfg, kw, limit=30, http=None: items)
+    cfg = make_cfg(news_keywords=["정치", "국회"], block_keywords=["극단적선택", "자살"], daily_count=5)
+    got = news.collect(cfg, set(), [])
+    assert sorted(i.link for i in got) == ["http://1", "http://4"]
+    # 최근 후보와 같은 사건은 다음 날에도 걸러진다
+    got = news.collect(cfg, set(), ["국회 예산안 처리 착수"])
+    assert [i.link for i in got] == ["http://4"]
+
+
+def test_breaking_skips_blocked_topics(monkeypatch):
+    from insta_agent import news
+    from insta_agent.news import NewsItem
+    from email.utils import format_datetime
+
+    now = datetime.now(timezone.utc)
+    mk = lambda t, n: NewsItem(t, "s", f"http://{n}", format_datetime(now))
+    monkeypatch.setattr(news, "search_news", lambda cfg, kw, limit=30, http=None: [mk("[속보] 성폭행 피해자 신원 공개", 1), mk("[속보] 한국은행 기준금리 동결", 2)])
+    got = news.collect_breaking(make_cfg(), set(), [], limit=5, now=now)
+    assert [i.link for i in got] == ["http://2"]
