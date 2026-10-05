@@ -188,6 +188,8 @@ def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None
             elif action == "re":
                 _ack(tg, cb["id"], "다시 쓰는 중…")
                 regenerate(cfg, queue, tg, cid)
+            elif action == "rt":  # 여기서 cid 는 후보가 아니라 예약 글(post)의 번호
+                _ack(tg, cb["id"], "다시 시도합니다" if queue.requeue(cid) else "이미 처리된 글입니다")
             return
         text = (update.get("message") or {}).get("text", "")
         m = re.match(r"^수정\s+#?(\d+)\s+(.+)", text, re.S)
@@ -232,6 +234,22 @@ def run_breaking(cfg: Config, queue: Queue, tg: Telegram, state: dict, today=Non
             state["notified_on"] = today
             _notify(tg, f"⚠️ 속보 확인 실패: {redact(e)}\n(같은 문제는 오늘 다시 알리지 않아요)")
         return 0
+
+
+def report_results(tg: Telegram, results: list[tuple[int, str]]) -> None:
+    """발행 결과를 알린다. 실패에는 '다시 시도' 버튼을 붙인다."""
+    for pid, result in results:
+        if result.startswith("expired"):
+            _notify(tg, f"⏳ #{pid} 예약 시각에서 너무 오래 지나(서버가 꺼져 있었나요?) 발행하지 않았습니다. 낡은 뉴스가 올라가지 않게 한 조치예요.")
+        elif result.startswith("failed"):
+            detail = result[len("failed:"):]
+            warn = "\n⚠️ 요청은 나갔는데 결과를 못 받았습니다. 인스타에 이미 올라갔을 수 있으니 계정을 먼저 확인하세요." if detail.startswith("[확인필요]") else ""
+            try:
+                tg.send(f"❌ #{pid} 발행 실패: {detail[:300]}{warn}", [("🔁 다시 시도", f"rt:{pid}")])
+            except Exception as e:
+                print(f"notify error: {redact(e)}")
+        else:
+            _notify(tg, f"📤 발행 결과 #{pid}: {result[:300]}")
 
 
 def report_stuck(queue: Queue, tg: Telegram) -> int:
@@ -298,11 +316,7 @@ def serve(cfg: Config) -> None:
             if slot is not None and slot != last_slot:
                 last_slot = slot
                 run_breaking(cfg, queue, tg, breaking_state)
-            for pid, result in run_due(queue, ig, max_late=timedelta(hours=cfg.post_max_late_hours)):
-                if result.startswith("expired"):
-                    tg.send(f"⏳ #{pid} 예약 시각에서 너무 오래 지나(서버가 꺼져 있었나요?) 발행하지 않았습니다. 낡은 뉴스가 올라가지 않게 한 조치예요.")
-                else:
-                    tg.send(f"📤 발행 결과 #{pid}: {result[:300]}")
+            report_results(tg, run_due(queue, ig, max_late=timedelta(hours=cfg.post_max_late_hours)))
             for update in tg.get_updates(offset):
                 offset = update["update_id"] + 1
                 handle_update(cfg, queue, tg, update)

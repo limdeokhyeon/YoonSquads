@@ -10,10 +10,18 @@ import time
 import requests
 
 from .config import Config
+from .safety import redact
+
+RETRY_DELAYS = (2, 5, 10)  # 일시적 오류는 이 간격(초)으로 최대 3번 더 시도
+_sleep = time.sleep
 
 
 class InstagramError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None, code: int | None = None, ambiguous: bool = False):
+        super().__init__(message)
+        self.status, self.code = status, code
+        # True면 "요청은 갔는데 결과를 모른다": 이미 올라갔을 수 있어 자동으로 다시 시도하면 안 된다
+        self.ambiguous = ambiguous
 
 
 def api_host(token: str) -> str:
@@ -58,14 +66,38 @@ class InstagramClient:
         self.token = data["access_token"]
         return self.token, int(data.get("expires_in", 0))
 
-    def _call(self, method: str, path: str, **params) -> dict:
+    def _call(self, method: str, path: str, retry: bool = True, **params) -> dict:
+        """API 호출. retry=True면 연결 실패·5xx·일시적 오류(code 1,2)를 몇 번 더 시도한다(되풀이해도 안전한 호출만)."""
         params["access_token"] = self.token
-        resp = self.http.request(method, f"{self.base}/{path}", params=params, timeout=30)
-        data = resp.json()
-        if resp.status_code >= 400 or "error" in data:
-            err = data.get("error", {})
-            raise InstagramError(f"{err.get('message', resp.text)} (code={err.get('code')})")
-        return data
+        delays = (0,) + RETRY_DELAYS if retry else (0,)
+        last: Exception | None = None
+        for delay in delays:
+            if delay:
+                _sleep(delay)
+            try:
+                resp = self.http.request(method, f"{self.base}/{path}", params=params, timeout=30)
+            except requests.RequestException as e:
+                if not retry:
+                    raise
+                last = e
+                continue
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            if resp.status_code >= 400 or "error" in data:
+                err = data.get("error", {})
+                exc = InstagramError(
+                    f"{err.get('message') or resp.text[:200]} (code={err.get('code')})", status=resp.status_code, code=err.get("code")
+                )
+                if retry and (resp.status_code >= 500 or err.get("code") in (1, 2)):
+                    last = exc
+                    continue
+                raise exc
+            return data
+        if isinstance(last, InstagramError):
+            raise last
+        raise InstagramError(f"연결 실패: {redact(last)}")
 
     def _create_container(self, **params) -> str:
         return self._call("POST", f"{self.user}/media", **params)["id"]
@@ -82,7 +114,15 @@ class InstagramClient:
 
     def _publish(self, container_id: str) -> str:
         self._wait_ready(container_id)
-        return self._call("POST", f"{self.user}/media_publish", creation_id=container_id)["id"]
+        try:
+            # 발행 요청은 자동으로 되풀이하지 않는다: 응답만 못 받았을 뿐 이미 올라갔다면 같은 글이 두 번 올라가므로
+            return self._call("POST", f"{self.user}/media_publish", retry=False, creation_id=container_id)["id"]
+        except requests.RequestException as e:
+            raise InstagramError(f"발행 응답을 받지 못했습니다: {redact(e)}", ambiguous=True)
+        except InstagramError as e:
+            if e.status is not None and e.status >= 500:
+                e.ambiguous = True
+            raise
 
     def publish_image(self, image_url: str, caption: str) -> str:
         return self._publish(self._create_container(image_url=image_url, caption=caption))

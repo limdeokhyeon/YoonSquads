@@ -168,6 +168,15 @@ class Queue:
     def stuck_publishing(self) -> list[Post]:
         return self.list("publishing")
 
+    def requeue(self, post_id: int, now: datetime | None = None) -> bool:
+        """실패한 글을 지금 다시 발행하도록 되돌린다. 실패 상태가 아니면 아무것도 하지 않는다."""
+        cur = self.db.execute(
+            "UPDATE posts SET status='pending', error=NULL, scheduled_at=? WHERE id=? AND status='failed'",
+            ((now or _now()).isoformat(), post_id),
+        )
+        self.db.commit()
+        return cur.rowcount == 1
+
     def mark_expired(self, post_id: int, reason: str) -> None:
         self.db.execute("UPDATE posts SET status='expired', error=? WHERE id=?", (reason, post_id))
         self.db.commit()

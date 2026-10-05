@@ -686,3 +686,83 @@ def test_breaking_skips_blocked_topics(monkeypatch):
     monkeypatch.setattr(news, "search_news", lambda cfg, kw, limit=30, http=None: [mk("[속보] 성폭행 피해자 신원 공개", 1), mk("[속보] 한국은행 기준금리 동결", 2)])
     got = news.collect_breaking(make_cfg(), set(), [], limit=5, now=now)
     assert [i.link for i in got] == ["http://2"]
+
+
+class _Resp:
+    def __init__(self, status=200, body=None, text=""):
+        self.status_code, self._body, self.text = status, body if body is not None else {}, text
+    def json(self):
+        if self._body is None:
+            raise ValueError("no json")
+        return self._body
+
+
+class _Seq:
+    """미리 정한 응답(또는 예외)을 차례로 돌려주는 가짜 세션."""
+    def __init__(self, *steps):
+        self.steps, self.calls = list(steps), []
+    def request(self, method, url, params, timeout):
+        self.calls.append((method, url.rsplit("/", 1)[-1]))
+        step = self.steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+def test_transient_errors_are_retried_for_safe_calls(monkeypatch):
+    import requests
+    from insta_agent import instagram
+    from insta_agent.instagram import InstagramClient
+
+    monkeypatch.setattr(instagram, "_sleep", lambda s: None)
+    seq = _Seq(requests.ConnectionError("down"), _Resp(503, {"error": {"message": "unavailable", "code": 2}}), _Resp(200, {"status_code": "FINISHED"}))
+    assert InstagramClient(make_cfg(ig_access_token="IGAAx"), session=seq)._call("GET", "c1", fields="status_code") == {"status_code": "FINISHED"}
+    assert len(seq.calls) == 3
+
+
+def test_publish_request_is_never_retried_and_marked_ambiguous(monkeypatch):
+    import requests
+    from insta_agent import instagram
+    from insta_agent.instagram import InstagramClient, InstagramError
+
+    monkeypatch.setattr(instagram, "_sleep", lambda s: None)
+    seq = _Seq(_Resp(200, {"id": "c1"}), _Resp(200, {"status_code": "FINISHED"}), requests.ReadTimeout("no response /bot123456:AAAAAAAAAAAAAAAAAAAAAAAAA"))
+    c = InstagramClient(make_cfg(ig_access_token="IGAAx"), session=seq)
+    with pytest.raises(InstagramError) as ei:
+        c.publish_image("https://img/x.png", "cap")
+    assert ei.value.ambiguous is True and "AAAAAAAA" not in str(ei.value)
+    assert [name for _, name in seq.calls].count("media_publish") == 1   # 한 번만 시도
+
+
+def test_clean_api_rejection_is_not_ambiguous(monkeypatch):
+    from insta_agent import instagram
+    from insta_agent.instagram import InstagramClient, InstagramError
+
+    monkeypatch.setattr(instagram, "_sleep", lambda s: None)
+    seq = _Seq(_Resp(200, {"id": "c1"}), _Resp(200, {"status_code": "FINISHED"}), _Resp(400, {"error": {"message": "Invalid", "code": 100}}))
+    with pytest.raises(InstagramError) as ei:
+        InstagramClient(make_cfg(ig_access_token="IGAAx"), session=seq).publish_image("u", "c")
+    assert ei.value.ambiguous is False
+
+
+def test_failed_post_gets_retry_button_and_requeue_works():
+    from insta_agent.agent import run_due
+
+    q, tg = Queue(":memory:"), FakeTG()
+    sent = []
+    tg.send = lambda text, buttons=None: sent.append((text, buttons))
+    pid = q.add("c", ["u"], datetime.now(timezone.utc) - timedelta(minutes=1))
+
+    class IG:
+        def publish(self, urls, caption):
+            e = RuntimeError("timeout"); e.ambiguous = True
+            raise e
+
+    bot.report_results(tg, run_due(q, IG()))
+    text, buttons = sent[-1]
+    assert "발행 실패" in text and "이미 올라갔을 수 있으니" in text and buttons == [("🔁 다시 시도", f"rt:{pid}")]
+    assert q.list()[0].status == "failed" and q.list()[0].error.startswith("[확인필요]")
+
+    bot.handle_update(make_cfg(), q, FakeTG(), _update(1, 1, f"rt:{pid}"))      # 버튼을 누르면
+    assert q.list()[0].status == "pending" and [p.id for p in q.due()] == [pid]  # 다시 발행 대상이 된다
+    assert q.requeue(pid) is False                                                # 이미 대기 중이면 아무 일도 없음

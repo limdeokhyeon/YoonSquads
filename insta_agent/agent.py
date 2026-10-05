@@ -37,6 +37,7 @@ def run_due(
             queue.mark_published(post.id, media_id)
             results.append((post.id, f"published:{media_id}"))
         except Exception as e:  # 한 건 실패가 나머지를 막지 않도록
-            queue.mark_failed(post.id, redact(e))
-            results.append((post.id, f"failed:{redact(e)}"))
+            msg = ("[확인필요] " if getattr(e, "ambiguous", False) else "") + redact(e)
+            queue.mark_failed(post.id, msg)
+            results.append((post.id, f"failed:{msg}"))
     return results
