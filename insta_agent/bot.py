@@ -19,6 +19,7 @@ from .stock import fetch_unsplash, track_download
 from .instagram import InstagramClient
 from .news import collect, collect_breaking
 from .queue import Queue
+from .safety import redact
 from .telegram import Telegram
 
 KST = timezone(timedelta(hours=9))
@@ -73,7 +74,7 @@ def make_cards(cfg: Config, cid: int, draft: NewsDraft, breaking: bool = False, 
                 open(credit_file, "w", encoding="utf-8").write(draft.photo_credit)
                 open(dl_file, "w", encoding="utf-8").write(location)
         except Exception as e:
-            print(f"background error: {e}")
+            print(f"background error: {redact(e)}")
     has_bg = os.path.exists(bg)
     return [render_card(draft, out, cfg.font_path, bg if has_bg else None, cfg.ai_label and cfg.photo_source == "ai", breaking)]
 
@@ -100,7 +101,7 @@ def propose(cfg: Config, queue: Queue, tg: Telegram) -> int:
             _send_review(cfg, tg, cid, data, draft)
             sent += 1
         except Exception as e:
-            tg.send(f"⚠️ 후보 생성 실패: {item.title[:40]}\n{e}")
+            tg.send(f"⚠️ 후보 생성 실패: {item.title[:40]}\n{redact(e)}")
     if not sent:
         tg.send("새로 올릴 만한 뉴스를 찾지 못했습니다.")
     return sent
@@ -123,8 +124,8 @@ def propose_breaking(cfg: Config, queue: Queue, tg: Telegram) -> int:
             _send_review(cfg, tg, cid, data, draft, breaking=True)
             sent += 1
         except Exception as e:
-            print(f"breaking error: {e}")  # 5분마다 반복될 수 있어 텔레그램에는 보내지 않는다
-            queue.add_candidate({**item.to_dict(), "skipped": str(e)}, {}, kind="breaking_failed")
+            print(f"breaking error: {redact(e)}")  # 5분마다 반복될 수 있어 텔레그램에는 보내지 않는다
+            queue.add_candidate({**item.to_dict(), "skipped": redact(e)}, {}, kind="breaking_failed")
     return sent
 
 
@@ -160,6 +161,14 @@ def regenerate(cfg: Config, queue: Queue, tg: Telegram, cid: int, feedback: str 
     _send_review(cfg, tg, cid, cand["item"], draft)
 
 
+def _ack(tg: Telegram, callback_id: str, text: str = "") -> None:
+    """버튼 응답. 너무 늦어 실패해도(query is too old) 본 작업은 계속하도록 오류를 삼킨다."""
+    try:
+        tg.answer_callback(callback_id, text)
+    except Exception as e:
+        print(f"callback ack error: {redact(e)}")
+
+
 def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None:
     if not tg.is_owner(update):  # 본인 외에는 무시
         return
@@ -169,12 +178,15 @@ def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None
             action, _, raw = cb["data"].partition(":")
             cid = int(raw)
             if action == "ok":
-                tg.answer_callback(cb["id"], approve(cfg, queue, tg, cid))
+                _ack(tg, cb["id"], "승인 처리 중…")  # 업로드에 시간이 걸리므로 먼저 응답해 버튼이 오래 돌지 않게
+                result = approve(cfg, queue, tg, cid)
+                if result != "승인됨":
+                    tg.send(result)
             elif action == "no":
                 queue.update_candidate(cid, status="rejected")
-                tg.answer_callback(cb["id"], "폐기했습니다")
+                _ack(tg, cb["id"], "폐기했습니다")
             elif action == "re":
-                tg.answer_callback(cb["id"], "다시 쓰는 중…")
+                _ack(tg, cb["id"], "다시 쓰는 중…")
                 regenerate(cfg, queue, tg, cid)
             return
         text = (update.get("message") or {}).get("text", "")
@@ -188,10 +200,47 @@ def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None
         elif text.startswith(("/start", "/help")):
             tg.send("명령어\n/collect — 지금 뉴스 수집\n/clear — 검토 대기 후보 모두 폐기\n수정 <번호> <요청> — 예) 수정 3 더 짧게\n버튼으로 승인/다시쓰기/폐기")
     except Exception as e:
-        tg.send(f"⚠️ 처리 중 오류: {e}")
+        tg.send(f"⚠️ 처리 중 오류: {redact(e)}")
 
 
 TOKEN_REFRESH_DAYS = 30
+
+
+def _notify(tg: Telegram, text: str) -> None:
+    try:
+        tg.send(text)
+    except Exception as e:
+        print(f"notify error: {redact(e)}")
+
+
+def run_collect(cfg: Config, queue: Queue, tg: Telegram) -> int:
+    """아침 정기 수집. 실패하면 조용히 넘기지 않고 텔레그램으로 알린다."""
+    try:
+        return propose(cfg, queue, tg)
+    except Exception as e:
+        _notify(tg, f"⚠️ 아침 뉴스 수집 실패: {redact(e)}\n/collect 로 다시 시도할 수 있어요")
+        return 0
+
+
+def run_breaking(cfg: Config, queue: Queue, tg: Telegram, state: dict, today=None) -> int:
+    """속보 확인. 실패는 하루에 한 번만 알린다(정각마다 같은 오류로 알림이 쌓이지 않게)."""
+    try:
+        return propose_breaking(cfg, queue, tg)
+    except Exception as e:
+        today = today or datetime.now(KST).date()
+        if state.get("notified_on") != today:
+            state["notified_on"] = today
+            _notify(tg, f"⚠️ 속보 확인 실패: {redact(e)}\n(같은 문제는 오늘 다시 알리지 않아요)")
+        return 0
+
+
+def report_stuck(queue: Queue, tg: Telegram) -> int:
+    """이전 실행에서 발행 도중 멈춘 글을 알린다. 중복 게시를 막기 위해 자동으로 다시 올리지는 않는다."""
+    stuck = queue.stuck_publishing()
+    for post in stuck:
+        queue.mark_failed(post.id, "발행 도중 서버가 멈춤 — 인스타에 올라갔는지 확인 필요")
+        _notify(tg, f"⚠️ #{post.id} 발행 도중 서버가 멈췄습니다. 인스타에 올라갔는지 확인해 주세요. 올라가지 않았다면 다시 승인해야 합니다.\n{post.caption[:80]}")
+    return len(stuck)
 
 
 def breaking_slot(cfg: Config, now: datetime):
@@ -231,27 +280,32 @@ def serve(cfg: Config) -> None:
     now0 = datetime.now(KST)
     last_collect = now0.date() if now0.hour >= cfg.collect_hour else None
     last_slot = None
-    tg.send("🤖 봇이 시작되었습니다. /collect 로 지금 수집할 수 있어요." + (f"\n🚨 속보 감시 켜짐: {cfg.breaking_start_hour:02d}:00~{cfg.breaking_end_hour:02d}:00 사이 {cfg.breaking_poll_minutes}분마다 확인, 하루 최대 {cfg.breaking_max_per_day}건" if cfg.breaking_enabled else ""))
+    breaking_state: dict = {}
+    report_stuck(queue, tg)
+    _notify(tg, "🤖 봇이 시작되었습니다. /collect 로 지금 수집할 수 있어요." + (f"\n🚨 속보 감시 켜짐: {cfg.breaking_start_hour:02d}:00~{cfg.breaking_end_hour:02d}:00 사이 {cfg.breaking_poll_minutes}분마다 확인, 하루 최대 {cfg.breaking_max_per_day}건" if cfg.breaking_enabled else ""))
     while True:
         try:
             now = datetime.now(KST)
             if now.hour >= cfg.collect_hour and last_collect != now.date():
                 last_collect = now.date()
-                propose(cfg, queue, tg)
+                run_collect(cfg, queue, tg)
             try:
                 maybe_refresh_token(queue, ig, tg)
             except Exception as e:
-                tg.send(f"⚠️ 인스타 토큰 갱신 실패: {e}\n만료 전에 Meta 대시보드에서 새 토큰을 발급하세요")
+                tg.send(f"⚠️ 인스타 토큰 갱신 실패: {redact(e)}\n만료 전에 Meta 대시보드에서 새 토큰을 발급하세요")
                 queue.set_meta("ig_token_refreshed", datetime.now(timezone.utc).isoformat())  # 매 루프마다 재시도하지 않도록
             slot = breaking_slot(cfg, now) if cfg.breaking_enabled else None
             if slot is not None and slot != last_slot:
                 last_slot = slot
-                propose_breaking(cfg, queue, tg)
-            for result in run_due(queue, ig):
-                tg.send(f"📤 발행 결과 #{result[0]}: {result[1][:300]}")
+                run_breaking(cfg, queue, tg, breaking_state)
+            for pid, result in run_due(queue, ig, max_late=timedelta(hours=cfg.post_max_late_hours)):
+                if result.startswith("expired"):
+                    tg.send(f"⏳ #{pid} 예약 시각에서 너무 오래 지나(서버가 꺼져 있었나요?) 발행하지 않았습니다. 낡은 뉴스가 올라가지 않게 한 조치예요.")
+                else:
+                    tg.send(f"📤 발행 결과 #{pid}: {result[:300]}")
             for update in tg.get_updates(offset):
                 offset = update["update_id"] + 1
                 handle_update(cfg, queue, tg, update)
         except Exception as e:
-            print(f"loop error: {e}")
+            print(f"loop error: {redact(e)}")
             time.sleep(10)

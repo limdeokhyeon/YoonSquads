@@ -8,6 +8,7 @@ from __future__ import annotations
 import requests
 
 from .config import Config
+from .safety import redact
 
 API = "https://api.unsplash.com"
 UTM = "utm_source=yoonsquads_news&utm_medium=referral"
@@ -64,4 +65,4 @@ def track_download(cfg: Config, download_location: str, http=requests) -> None:
     try:
         http.get(download_location, headers={"Authorization": f"Client-ID {cfg.unsplash_key}", "Accept-Version": "v1"}, timeout=20)
     except Exception as e:
-        print(f"unsplash track error: {e}")
+        print(f"unsplash track error: {redact(e)}")

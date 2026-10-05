@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS posts (
     caption TEXT NOT NULL,
     image_urls TEXT NOT NULL,
     scheduled_at TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',   -- pending | published | failed
+    status TEXT NOT NULL DEFAULT 'pending',   -- pending | publishing | published | failed | expired
     media_id TEXT,
     error TEXT
 )"""
@@ -159,6 +159,18 @@ class Queue:
         if status:
             q, args = q + " WHERE status=?", (status,)
         return [_row(r) for r in self.db.execute(q + " ORDER BY scheduled_at", args)]
+
+    def mark_publishing(self, post_id: int) -> None:
+        """발행을 시작하기 직전에 표시한다. 도중에 꺼져도 다시 자동 발행되지 않아 중복 게시를 막는다."""
+        self.db.execute("UPDATE posts SET status='publishing' WHERE id=?", (post_id,))
+        self.db.commit()
+
+    def stuck_publishing(self) -> list[Post]:
+        return self.list("publishing")
+
+    def mark_expired(self, post_id: int, reason: str) -> None:
+        self.db.execute("UPDATE posts SET status='expired', error=? WHERE id=?", (reason, post_id))
+        self.db.commit()
 
     def mark_published(self, post_id: int, media_id: str) -> None:
         self.db.execute("UPDATE posts SET status='published', media_id=? WHERE id=?", (media_id, post_id))

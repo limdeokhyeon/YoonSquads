@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, brand_hashtag="", photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_start_hour=0, breaking_end_hour=24, breaking_max_per_day=2, breaking_max_age_min=90,
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, brand_hashtag="", photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, post_max_late_hours=6, breaking_start_hour=0, breaking_end_hour=24, breaking_max_per_day=2, breaking_max_age_min=90,
     )
     base.update(kw)
     return Config(**base)
@@ -464,7 +464,6 @@ def test_legacy_ai_images_flag_still_means_ai(monkeypatch):
 
 
 def test_unsplash_download_tracked_only_on_approval(monkeypatch, tmp_path):
-    from insta_agent.stock import track_download
 
     monkeypatch.chdir(tmp_path)
     tracked = []
@@ -557,3 +556,93 @@ def test_breaking_slot_runs_on_the_hour_inside_window_only():
     assert bot.breaking_slot(half, at(9, 0)) != bot.breaking_slot(half, at(9, 30))
     # 기본값(0~24)은 하루 종일
     assert bot.breaking_slot(make_cfg(), at(3, 0)) is not None
+
+
+def test_redact_hides_bot_tokens_and_api_keys():
+    from insta_agent.safety import redact
+
+    msg = "HTTPSConnectionPool: Max retries exceeded with url: /bot8621126445:AAHfakefakefakefakefakefakefakefake1/getUpdates?access_token=IGAAsecretsecretsecretsecretsecretsecret99&x=1"
+    out = redact(msg)
+    assert "8621126445" not in out and "AAHfake" not in out and "IGAAsecret" not in out
+    assert "/bot***/getUpdates" in out and "access_token=***" in out
+    assert redact("평범한 오류 메시지") == "평범한 오류 메시지"
+
+
+def test_failure_messages_never_contain_tokens():
+    from insta_agent.agent import run_due
+
+    q = Queue(":memory:")
+    q.add("c", ["u"], datetime.now(timezone.utc) - timedelta(minutes=1))
+
+    class IG:
+        def publish(self, urls, caption):
+            raise RuntimeError("url: /bot8621126445:AAHfakefakefakefakefakefakefakefake1/x")
+
+    (pid, result), = run_due(q, IG())
+    assert "AAHfake" not in result and "AAHfake" not in (q.list()[0].error or "")
+
+
+def test_stale_posts_expire_instead_of_publishing():
+    from insta_agent.agent import run_due
+
+    q, published = Queue(":memory:"), []
+    now = datetime.now(timezone.utc)
+    old = q.add("3일 전 속보", ["u"], now - timedelta(days=3))
+    fresh = q.add("방금 예약한 글", ["u"], now - timedelta(minutes=10))
+
+    class IG:
+        def publish(self, urls, caption):
+            published.append(caption)
+            return "m"
+
+    out = dict(run_due(q, IG(), max_late=timedelta(hours=6)))
+    assert out[old].startswith("expired") and out[fresh].startswith("published")
+    assert published == ["방금 예약한 글"]
+    assert {p.id: p.status for p in q.list()} == {old: "expired", fresh: "published"}
+
+
+def test_post_stuck_in_publishing_is_reported_not_republished():
+    q, tg = Queue(":memory:"), FakeTG()
+    pid = q.add("발행 중 멈춘 글", ["u"], datetime.now(timezone.utc) - timedelta(minutes=1))
+    q.mark_publishing(pid)                              # 발행을 시작하고 서버가 꺼졌다고 가정
+    assert q.due() == []                                 # 자동으로 다시 발행되지 않는다
+    assert bot.report_stuck(q, tg) == 1
+    assert "인스타에 올라갔는지" in tg.sent[-1] and q.list()[0].status == "failed"
+
+
+def test_buttons_are_acknowledged_before_slow_work(monkeypatch):
+    q, tg = Queue(":memory:"), FakeTG()
+    order = []
+    tg.answer_callback = lambda cid, text="": order.append(f"ack:{text}")
+    monkeypatch.setattr(bot, "approve", lambda cfg, q_, tg_, cid: order.append("approve") or "승인됨")
+    bot.handle_update(make_cfg(), q, tg, _update(1, 1, "ok:1"))
+    assert order == ["ack:승인 처리 중…", "approve"]   # 업로드 전에 먼저 응답
+
+
+def test_late_callback_ack_failure_does_not_break_approval(monkeypatch):
+    q, tg = Queue(":memory:"), FakeTG()
+    def boom(cid, text=""): raise RuntimeError("Bad Request: query is too old")
+    tg.answer_callback = boom
+    done = []
+    monkeypatch.setattr(bot, "approve", lambda *a: done.append(1) or "승인됨")
+    bot.handle_update(make_cfg(), q, tg, _update(1, 1, "ok:1"))
+    assert done == [1] and not any("오류" in m for m in tg.sent)
+
+
+def test_scheduled_collect_failure_is_reported(monkeypatch):
+    q, tg = Queue(":memory:"), FakeTG()
+    monkeypatch.setattr(bot, "propose", lambda *a: (_ for _ in ()).throw(RuntimeError("네이버 401")))
+    assert bot.run_collect(make_cfg(), q, tg) == 0
+    assert "아침 뉴스 수집 실패" in tg.sent[-1] and "네이버 401" in tg.sent[-1]
+
+
+def test_breaking_failure_reported_once_per_day(monkeypatch):
+    from datetime import date
+
+    q, tg, state = Queue(":memory:"), FakeTG(), {}
+    monkeypatch.setattr(bot, "propose_breaking", lambda *a: (_ for _ in ()).throw(RuntimeError("timeout")))
+    for _ in range(3):
+        bot.run_breaking(make_cfg(), q, tg, state, today=date(2026, 10, 6))
+    assert len([m for m in tg.sent if "속보 확인 실패" in m]) == 1
+    bot.run_breaking(make_cfg(), q, tg, state, today=date(2026, 10, 7))   # 다음 날엔 다시 알린다
+    assert len([m for m in tg.sent if "속보 확인 실패" in m]) == 2
