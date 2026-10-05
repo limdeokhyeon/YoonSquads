@@ -92,3 +92,6 @@ tail -f logs/serve.log           # 로그 보기 (Control + C 로 나가기)
 bash install_service.sh remove   # 해제
 ```
 등록한 뒤에는 `bash update.sh` 만 실행하면 최신 코드로 맞추고 서비스를 재시작합니다. 터미널에서 직접 켠 서버가 있으면 먼저 끄세요(두 곳에서 돌면 텔레그램 메시지가 꼬임).
+
+## 속보 확인 시간대
+`BREAKING_START_HOUR=9`, `BREAKING_END_HOUR=18`, `BREAKING_POLL_MINUTES=60`이면 매일 09:00, 10:00 … 18:00(한국시간) 정각에 한 번씩만 확인하고 그 밖의 시간에는 쉽니다. 기본값(0~24)은 하루 종일입니다.

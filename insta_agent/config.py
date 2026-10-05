@@ -47,6 +47,8 @@ class Config:
     breaking_enabled: bool
     breaking_keywords: list[str]
     breaking_poll_minutes: int
+    breaking_start_hour: int
+    breaking_end_hour: int
     breaking_max_per_day: int
     breaking_max_age_min: int
 
@@ -74,6 +76,8 @@ class Config:
             breaking_enabled=os.getenv("BREAKING", "false").lower() in ("1", "true", "yes"),
             breaking_keywords=_list("BREAKING_KEYWORDS", "속보"),
             breaking_poll_minutes=int(os.getenv("BREAKING_POLL_MINUTES", "5")),
+            breaking_start_hour=int(os.getenv("BREAKING_START_HOUR", "0")),
+            breaking_end_hour=int(os.getenv("BREAKING_END_HOUR", "24")),
             breaking_max_per_day=int(os.getenv("BREAKING_MAX_PER_DAY", "5")),
             breaking_max_age_min=int(os.getenv("BREAKING_MAX_AGE_MIN", "90")),
             fetch_body=os.getenv("FETCH_BODY", "false").lower() in ("1", "true", "yes"),

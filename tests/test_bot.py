@@ -18,7 +18,7 @@ def make_cfg(**kw):
         anthropic_api_key="", ig_user_id="", ig_access_token="", graph_version="v21.0", model="m",
         brand_voice="", db_path=":memory:", naver_client_id="", naver_client_secret="",
         telegram_token="T", telegram_chat_id="1", news_keywords=["a", "b"], daily_count=3,
-        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, brand_hashtag="", photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_max_per_day=2, breaking_max_age_min=90,
+        collect_hour=9, post_hours=[12, 18], imgbb_key="k", font_path="", ai_label=True, brand_hashtag="", photo_source="none", unsplash_key="", openai_key="", openai_image_model="m", fetch_body=False, breaking_enabled=True, breaking_keywords=["속보"], breaking_poll_minutes=5, breaking_start_hour=0, breaking_end_hour=24, breaking_max_per_day=2, breaking_max_age_min=90,
     )
     base.update(kw)
     return Config(**base)
@@ -536,3 +536,24 @@ def test_unsplash_search_relaxes_until_a_photo_is_found(tmp_path):
     credit, _ = fetch_unsplash(make_cfg(unsplash_key="k"), "stock exchange trading floor", str(tmp_path / "bg.png"), http=H())
     assert searches == [("stock exchange trading floor", "portrait"), ("stock exchange trading floor", None), ("stock exchange", None)]
     assert credit.startswith("J / Unsplash")
+
+
+def test_breaking_slot_runs_on_the_hour_inside_window_only():
+    from dataclasses import replace
+
+    cfg = replace(make_cfg(), breaking_poll_minutes=60, breaking_start_hour=9, breaking_end_hour=18)
+    at = lambda h, m=0, d=5: datetime(2026, 10, d, h, m, tzinfo=KST)
+    assert bot.breaking_slot(cfg, at(8, 59)) is None            # 시작 전
+    assert bot.breaking_slot(cfg, at(9, 0)) is not None         # 9시 정각부터
+    assert bot.breaking_slot(cfg, at(9, 40)) == bot.breaking_slot(cfg, at(9, 0))   # 같은 시간대는 같은 칸 → 한 번만
+    assert bot.breaking_slot(cfg, at(10, 0)) != bot.breaking_slot(cfg, at(9, 59))  # 정각이 되면 새 칸
+    assert bot.breaking_slot(cfg, at(18, 0)) is not None        # 18시 정각까지 확인
+    assert bot.breaking_slot(cfg, at(18, 1)) is None            # 18시 이후는 쉼
+    assert bot.breaking_slot(cfg, at(23, 56)) is None and bot.breaking_slot(cfg, at(0, 7, 6)) is None
+    # 하루가 바뀌면 같은 시각이라도 새 칸
+    assert bot.breaking_slot(cfg, at(9, 0, 5)) != bot.breaking_slot(cfg, at(9, 0, 6))
+    # 30분 간격이면 9:00, 9:30 …
+    half = replace(cfg, breaking_poll_minutes=30)
+    assert bot.breaking_slot(half, at(9, 0)) != bot.breaking_slot(half, at(9, 30))
+    # 기본값(0~24)은 하루 종일
+    assert bot.breaking_slot(make_cfg(), at(3, 0)) is not None

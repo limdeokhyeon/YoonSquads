@@ -194,6 +194,17 @@ def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None
 TOKEN_REFRESH_DAYS = 30
 
 
+def breaking_slot(cfg: Config, now: datetime):
+    """속보를 확인할 시간대(한국시간 start~end시, 끝 시각 정각 포함)이면 현재 칸(날짜, 몇 번째 간격)을, 아니면 None.
+
+    칸이 바뀔 때마다 한 번씩 확인하므로 간격이 60분이면 9:00, 10:00 … 18:00 정각에 확인한다."""
+    minutes = now.hour * 60 + now.minute
+    if not (cfg.breaking_start_hour * 60 <= minutes <= cfg.breaking_end_hour * 60):
+        return None
+    return (now.date(), minutes // max(cfg.breaking_poll_minutes, 1))
+
+
+
 def maybe_refresh_token(queue: Queue, ig: InstagramClient, tg: Telegram, now: datetime | None = None) -> bool:
     """Instagram 로그인 토큰(60일 만료)을 30일마다 연장하고 .env에 저장한다."""
     if ig.host != "graph.instagram.com":
@@ -219,8 +230,8 @@ def serve(cfg: Config) -> None:
     # 켤 때마다 후보가 쏟아지지 않도록, 이미 수집 시각이 지났으면 오늘 몫은 건너뛴다
     now0 = datetime.now(KST)
     last_collect = now0.date() if now0.hour >= cfg.collect_hour else None
-    next_breaking = 0.0
-    tg.send("🤖 봇이 시작되었습니다. /collect 로 지금 수집할 수 있어요." + (f"\n🚨 속보 감시 켜짐: {cfg.breaking_poll_minutes}분마다 확인, 하루 최대 {cfg.breaking_max_per_day}건" if cfg.breaking_enabled else ""))
+    last_slot = None
+    tg.send("🤖 봇이 시작되었습니다. /collect 로 지금 수집할 수 있어요." + (f"\n🚨 속보 감시 켜짐: {cfg.breaking_start_hour:02d}:00~{cfg.breaking_end_hour:02d}:00 사이 {cfg.breaking_poll_minutes}분마다 확인, 하루 최대 {cfg.breaking_max_per_day}건" if cfg.breaking_enabled else ""))
     while True:
         try:
             now = datetime.now(KST)
@@ -232,8 +243,9 @@ def serve(cfg: Config) -> None:
             except Exception as e:
                 tg.send(f"⚠️ 인스타 토큰 갱신 실패: {e}\n만료 전에 Meta 대시보드에서 새 토큰을 발급하세요")
                 queue.set_meta("ig_token_refreshed", datetime.now(timezone.utc).isoformat())  # 매 루프마다 재시도하지 않도록
-            if cfg.breaking_enabled and time.monotonic() >= next_breaking:
-                next_breaking = time.monotonic() + cfg.breaking_poll_minutes * 60
+            slot = breaking_slot(cfg, now) if cfg.breaking_enabled else None
+            if slot is not None and slot != last_slot:
+                last_slot = slot
                 propose_breaking(cfg, queue, tg)
             for result in run_due(queue, ig):
                 tg.send(f"📤 발행 결과 #{result[0]}: {result[1][:300]}")
