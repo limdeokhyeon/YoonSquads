@@ -126,10 +126,19 @@ class NewsDraft:
     photo_credit: str = ""
 
     def full_text(self) -> str:
+        """인스타 캡션(최대 2,200자). 길면 본문을 줄이고, 그래도 넘치면 핵심 줄을 빼서 해시태그와 출처는 지킨다."""
         tags = " ".join(f"#{t}" for t in self.hashtags)
         points = "\n".join(f"• {b}" for b in self.bullets)
         credit = f"\n사진: {self.photo_credit}" if self.photo_credit else ""
-        return f"{self.caption}\n\n{points}\n\n출처: {self.source_name or '기사 원문'} {self.source_link}{credit}\n\n{tags}".strip()
+        source = f"출처: {self.source_name or '기사 원문'} {self.source_link}{credit}"
+        tail = f"\n\n{points}\n\n{source}\n\n{tags}"
+        caption = self.caption
+        if len(caption) + len(tail) > CAPTION_LIMIT:
+            if CAPTION_LIMIT - len(tail) < 80:  # 본문 자리가 거의 없으면 핵심 줄을 빼고 본문을 살린다
+                tail = f"\n\n{source}\n\n{tags}"
+            budget = CAPTION_LIMIT - len(tail)
+            caption = caption[: max(budget - 1, 0)].rstrip() + "…" if budget > 1 else ""
+        return (caption + tail).strip()[:CAPTION_LIMIT]
 
 
 def diversify_tags(tags: list[str], recent_tags: list[str], brand: str = "", min_keep: int = 3, max_tags: int = 8) -> list[str]:

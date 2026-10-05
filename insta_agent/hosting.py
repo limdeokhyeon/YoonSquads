@@ -9,11 +9,17 @@ import requests
 from .config import Config
 
 
+JPEG_MAGIC = b"\xff\xd8\xff"
+
+
 def upload_image(cfg: Config, path: str, http=requests) -> str:
     if not cfg.imgbb_key:
         raise RuntimeError("IMGBB_API_KEY가 필요합니다 (https://api.imgbb.com 에서 무료 발급)")
     with open(path, "rb") as f:
-        payload = base64.b64encode(f.read()).decode()
+        raw = f.read()
+    if not raw.startswith(JPEG_MAGIC):  # 인스타그램은 JPEG만 받으므로 올리기 전에 막는다
+        raise RuntimeError(f"JPEG 이미지가 아닙니다({path}). 인스타그램은 JPEG만 지원합니다")
+    payload = base64.b64encode(raw).decode()
     resp = http.post(
         "https://api.imgbb.com/1/upload", data={"key": cfg.imgbb_key, "image": payload}, timeout=60
     )

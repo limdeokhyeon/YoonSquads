@@ -90,6 +90,23 @@ class Queue:
         self.db.commit()
         return cur.lastrowid
 
+    def record_failure(self, item: dict, error: str, kind: str = "breaking_failed") -> None:
+        """후보를 만들지 못한 기사를 기록해 두어 다시 시도하지 않게 한다. 같은 링크가 이미 있으면 아무 일도 하지 않는다."""
+        self.db.execute(
+            "INSERT OR IGNORE INTO candidates (link, item, draft, status, kind, created) VALUES (?,?,?,?,?,?)",
+            (item["link"], json.dumps({**item, "skipped": error}, ensure_ascii=False), "{}", "error", kind, _now().isoformat()),
+        )
+        self.db.commit()
+
+    def reopen_candidate_for_post(self, post_id: int) -> int | None:
+        """승인돼 예약된 글을 다시 검토 대기로 되돌린다. 되돌린 후보 번호(없으면 None)."""
+        r = self.db.execute("SELECT id FROM candidates WHERE post_id=?", (post_id,)).fetchone()
+        if not r:
+            return None
+        self.db.execute("UPDATE candidates SET status='proposed', post_id=NULL WHERE id=?", (r["id"],))
+        self.db.commit()
+        return r["id"]
+
     def get_candidate(self, cid: int) -> dict | None:
         r = self.db.execute("SELECT * FROM candidates WHERE id=?", (cid,)).fetchone()
         if not r:

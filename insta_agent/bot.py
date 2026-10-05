@@ -101,6 +101,7 @@ def propose(cfg: Config, queue: Queue, tg: Telegram) -> int:
     items = collect(cfg, queue.seen_links(), queue.recent_titles())
     sent = 0
     for item in items:
+        cid = None
         try:
             data = item.to_dict()
             if cfg.fetch_body:
@@ -110,7 +111,9 @@ def propose(cfg: Config, queue: Queue, tg: Telegram) -> int:
             _send_review(cfg, tg, cid, data, draft)
             sent += 1
         except Exception as e:
-            tg.send(f"⚠️ 후보 생성 실패: {item.title[:40]}\n{redact(e)}")
+            if cid is not None:  # 후보는 만들었는데 보내기에서 실패: 보이지 않는 '검토 대기' 후보로 남기지 않는다
+                queue.update_candidate(cid, status="error")
+            _notify(tg, f"⚠️ 후보 생성 실패: {item.title[:40]}\n{redact(e)}")
     if not sent:
         tg.send("새로 올릴 만한 뉴스를 찾지 못했습니다.")
     return sent
@@ -123,6 +126,7 @@ def propose_breaking(cfg: Config, queue: Queue, tg: Telegram) -> int:
         return 0
     sent = 0
     for item in collect_breaking(cfg, queue.seen_links(), queue.recent_titles(), room):
+        cid = None
         try:
             data = item.to_dict()
             if cfg.fetch_body:
@@ -133,8 +137,11 @@ def propose_breaking(cfg: Config, queue: Queue, tg: Telegram) -> int:
             _send_review(cfg, tg, cid, data, draft, breaking=True)
             sent += 1
         except Exception as e:
-            log.warning(f"breaking error: {redact(e)}")  # 5분마다 반복될 수 있어 텔레그램에는 보내지 않는다
-            queue.add_candidate({**item.to_dict(), "skipped": redact(e)}, {}, kind="breaking_failed")
+            log.warning(f"breaking error: {redact(e)}")  # 정각마다 반복될 수 있어 텔레그램에는 보내지 않는다
+            if cid is not None:  # 이미 저장된 후보를 다시 저장하면 중복 오류가 나므로 상태만 바꾸고 다음 기사로 계속
+                queue.update_candidate(cid, status="error")
+            else:
+                queue.record_failure(item.to_dict(), redact(e))
     return sent
 
 
@@ -310,6 +317,29 @@ def run_insights(queue: Queue, ig: InstagramClient, tg: Telegram, state: dict, n
     return got
 
 
+def migrate_png_posts(cfg: Config, queue: Queue, tg: Telegram) -> int:
+    """JPEG로 바꾸기 전에 승인돼 PNG 주소를 가진 예약 글을 발행 전에 찾아 다시 검토 대기로 돌린다.
+
+    그대로 두면 발행 시각에 인스타그램이 PNG를 거절해 실패한다. 같은 사진으로 JPEG 카드를 다시 보내 승인 버튼을 새로 준다."""
+    moved = 0
+    for post in queue.list("pending"):
+        if not any(u.lower().split("?")[0].endswith(".png") for u in post.image_urls):
+            continue
+        queue.mark_failed(post.id, "PNG 이미지(인스타그램은 JPEG만 지원) — 다시 승인 필요")
+        cid = queue.reopen_candidate_for_post(post.id)
+        moved += 1
+        cand = queue.get_candidate(cid) if cid else None
+        if cand:
+            _notify(tg, f"⚠️ #{cid} 예약 글은 이미지 형식(PNG)을 인스타그램이 받지 않아 발행 전에 검토 대기로 되돌렸어요. 아래 카드에서 ✅ 승인을 다시 눌러 주세요.")
+            try:
+                _send_review(cfg, tg, cid, cand["item"], _draft(cand["draft"]), cand.get("kind") == "breaking", reuse=True)
+            except Exception as e:
+                _notify(tg, f"카드를 다시 보내지 못했어요: {redact(e)}")
+        else:
+            _notify(tg, f"⚠️ 예약 글 #{post.id}의 이미지가 PNG라 발행하지 않았어요. 새로 수집해서 다시 승인해 주세요.")
+    return moved
+
+
 def report_stuck(queue: Queue, tg: Telegram) -> int:
     """이전 실행에서 발행 도중 멈춘 글을 알린다. 중복 게시를 막기 위해 자동으로 다시 올리지는 않는다."""
     stuck = queue.stuck_publishing()
@@ -377,6 +407,7 @@ def serve(cfg: Config) -> None:
     errors_in_a_row = 0
     log.info("서버 시작")
     report_stuck(queue, tg)
+    migrate_png_posts(cfg, queue, tg)
     _notify(tg, "🤖 봇이 시작되었습니다. /collect 로 지금 수집할 수 있어요." + (f"\n🚨 속보 감시 켜짐: {cfg.breaking_start_hour:02d}:00~{cfg.breaking_end_hour:02d}:00 사이 {cfg.breaking_poll_minutes}분마다 확인, 하루 최대 {cfg.breaking_max_per_day}건" if cfg.breaking_enabled else ""))
     while True:
         try:

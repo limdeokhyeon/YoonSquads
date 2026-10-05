@@ -164,6 +164,7 @@ def render_card(
         d.rounded_rectangle([W - MARGIN - tw - 36, 48, W - MARGIN, 48 + 46], radius=23, fill=(0, 0, 0))
         d.text((W - MARGIN - tw - 18, 55), "AI 생성 이미지", font=tag_font, fill=SOFT)
 
-    path = os.path.join(out_dir, "card.png")
-    img.save(path)
+    # 인스타그램 API는 JPEG만 받는다(PNG는 발행 단계에서 거절될 수 있음). 용량도 PNG의 1/3 정도.
+    path = os.path.join(out_dir, "card.jpg")
+    img.convert("RGB").save(path, "JPEG", quality=92, optimize=True)
     return path

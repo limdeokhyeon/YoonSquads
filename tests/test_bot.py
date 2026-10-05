@@ -362,7 +362,7 @@ def test_render_card_single_image(tmp_path):
 
     d = NewsDraft("북한 “저고도 비행 궤도 변경 능력 보유”", ["a"], "c", [], "https://x", badge="속보", kicker="합참 발표", subhead="‘AI 도입’ 상기 필요", source_name="MBN")
     path = render_card(d, str(tmp_path), font, breaking=True)
-    assert path.endswith("card.png") and Image.open(path).size == (1080, 1350)
+    assert path.endswith("card.jpg") and Image.open(path).size == (1080, 1350) and Image.open(path).format == "JPEG"
 
 
 def test_render_card_handles_very_long_headline_and_ai_label(tmp_path):
@@ -920,3 +920,156 @@ def test_direct_edit_commands_change_fields_without_ai_and_keep_photo(monkeypatc
     q.update_candidate(cid, status="approved")
     send(f"캡션 {cid} 승인 뒤에는 못 고침")
     assert tg.sent[-1] == "이미 처리된 후보입니다"
+
+
+# ---------- 보완 1: 인스타는 JPEG만 ----------
+def test_card_is_real_jpeg_and_smaller_than_png(tmp_path):
+    font = _font()
+    if not font:
+        pytest.skip("한글 폰트 없음")
+    import os
+    from PIL import Image
+
+    bg = tmp_path / "bg.png"
+    Image.effect_noise((1024, 1536), 80).convert("RGB").save(bg)            # 사진처럼 복잡한 배경
+    d = NewsDraft("속보 제목", ["a"], "c", [], "https://x", badge="속보", subhead="부제", source_name="KBS")
+    path = render_card(d, str(tmp_path / "out"), font, str(bg))
+    assert open(path, "rb").read(3) == b"\xff\xd8\xff"                      # 파일 내용 자체가 JPEG
+    png = tmp_path / "same.png"
+    Image.open(path).save(png)
+    assert os.path.getsize(path) < os.path.getsize(png) / 2                 # 용량이 크게 줄어듦
+
+
+def test_upload_refuses_png(tmp_path):
+    from PIL import Image
+    from insta_agent.hosting import upload_image
+
+    png = tmp_path / "x.png"
+    Image.new("RGB", (10, 10)).save(png)
+    jpg = tmp_path / "x.jpg"
+    Image.new("RGB", (10, 10)).save(jpg, "JPEG")
+
+    class R:
+        def raise_for_status(self): pass
+        def json(self): return {"data": {"url": "https://i.ibb.co/x.jpg"}}
+
+    class H:
+        def post(self, url, data, timeout): return R()
+
+    with pytest.raises(RuntimeError, match="JPEG"):
+        upload_image(make_cfg(), str(png), http=H())          # PNG는 인스타에 가기 전에 막는다
+    assert upload_image(make_cfg(), str(jpg), http=H()) == "https://i.ibb.co/x.jpg"
+
+
+# ---------- 보완 4: 캡션 2,200자 ----------
+def test_full_text_never_exceeds_instagram_caption_limit():
+    from insta_agent.content import CAPTION_LIMIT
+
+    link = "https://n.news.naver.com/mnews/article/001/0000000001"
+    credit = "Jane Doe / Unsplash https://unsplash.com/@jane?utm_source=a&utm_medium=referral"
+    # 최악의 경우: 본문이 매우 길고 핵심 줄·출처·사진 출처·태그가 모두 있음
+    d = NewsDraft("h", ["가" * 45] * 4, "본문" * 1500, ["태그%d" % i for i in range(9)], link, source_name="연합뉴스", photo_credit=credit)
+    text = d.full_text()
+    assert len(text) <= CAPTION_LIMIT
+    assert "…" in text and "#태그8" in text and link in text and "Jane Doe" in text   # 본문만 줄고 태그·출처는 유지
+    # 짧은 글은 그대로
+    short = NewsDraft("h", ["가"], "짧은 본문", ["a"], link, source_name="KBS")
+    assert short.full_text() == f"짧은 본문\n\n• 가\n\n출처: KBS {link}\n\n#a"
+    # 본문 자리가 거의 없을 만큼 꽉 차면 핵심 줄을 빼고 본문을 살린다
+    tight = NewsDraft("h", ["가" * 200] * 4, "본문" * 300, ["태그%d" % i for i in range(8)], link, source_name="연합뉴스", photo_credit=credit)
+    out = tight.full_text()
+    assert len(out) <= CAPTION_LIMIT and out.startswith("본문")
+
+
+# ---------- 보완 2·3: 보내기 실패한 후보 ----------
+def _breaking_env(monkeypatch, tg_photo_fail_times):
+    from insta_agent.news import NewsItem
+    from email.utils import format_datetime
+
+    now = datetime.now(timezone.utc)
+    mk = lambda t, n: NewsItem(f"[속보] {t}", "s", f"http://n/{n}", format_datetime(now), "https://yna.co.kr/1")
+    monkeypatch.setattr(bot, "collect_breaking", lambda cfg, seen, recent, limit: [mk("서로 완전히 다른 첫째 사건", 1), mk("전혀 무관한 둘째 일이 발생", 2)])
+    monkeypatch.setattr(bot, "generate_news_draft", lambda cfg, item, fb="", **k: NewsDraft("제목", ["가"], "본문", ["t"], item["link"]))
+    monkeypatch.setattr(bot, "render_card", lambda *a, **k: "a.jpg")
+    monkeypatch.setattr(bot.os, "makedirs", lambda *a, **k: None)
+    tg, left = FakeTG(), [tg_photo_fail_times]
+
+    def send_photo(*a, **k):
+        if left[0] > 0:
+            left[0] -= 1
+            raise RuntimeError("Telegram sendPhoto 실패: Bad Request")
+    tg.send_photo = send_photo
+    return tg
+
+
+def test_breaking_send_failure_does_not_crash_and_continues_with_next_item(monkeypatch):
+    q = Queue(":memory:")
+    tg = _breaking_env(monkeypatch, tg_photo_fail_times=1)            # 첫 후보만 전송 실패
+    assert bot.propose_breaking(make_cfg(), q, tg) == 1                # 예외가 터지지 않고 둘째 후보는 정상 처리
+    rows = [(r["status"], r["kind"]) for r in q.db.execute("SELECT status, kind FROM candidates ORDER BY id")]
+    assert rows == [("error", "breaking"), ("proposed", "breaking")]   # 보이지 않는 '검토 대기'가 남지 않음
+
+
+def test_breaking_generation_failure_is_recorded_once_without_duplicate_error(monkeypatch):
+    q = Queue(":memory:")
+    tg = _breaking_env(monkeypatch, 0)
+    monkeypatch.setattr(bot, "generate_news_draft", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("claude 한도 초과")))
+    assert bot.propose_breaking(make_cfg(), q, tg) == 0
+    assert [r["status"] for r in q.db.execute("SELECT status FROM candidates")] == ["error", "error"]
+    # 같은 링크로 다시 기록해도 오류 없이 무시된다
+    q.record_failure({"link": "http://n/1", "title": "t"}, "again")
+    assert q.db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0] == 2
+
+
+def test_daily_send_failure_does_not_leave_phantom_proposed_candidate(monkeypatch):
+    from insta_agent.news import NewsItem
+
+    q = Queue(":memory:")
+    tg = _breaking_env(monkeypatch, tg_photo_fail_times=1)
+    monkeypatch.setattr(bot, "collect", lambda cfg, seen, recent=None: [NewsItem("정치 소식 하나", "s", "http://n/10", "d", ""), NewsItem("경제 소식 둘", "s", "http://n/11", "d", "")])
+    assert bot.propose(make_cfg(), q, tg) == 1
+    assert [r["status"] for r in q.db.execute("SELECT status FROM candidates ORDER BY id")] == ["error", "proposed"]
+    assert any("후보 생성 실패" in m for m in tg.sent)
+    assert q.recent_styles() == [{"tags": ["t"], "hook": "본문"}]       # 실패한 후보는 '최근 글'에서도 빠짐
+
+
+# ---------- JPEG 전환 전에 승인된 PNG 예약 글 ----------
+def test_pending_png_posts_are_reopened_for_review_instead_of_failing_later(monkeypatch):
+    q, tg = Queue(":memory:"), FakeTG()
+    draft = NewsDraft("제목", ["가"], "본문", ["t"], "l").__dict__
+    cid = q.add_candidate({"title": "t", "summary": "s", "link": "l", "pub_date": ""}, draft)
+    png_post = q.add("c", ["https://i.ibb.co/abc/card.png"], datetime.now(timezone.utc) + timedelta(hours=1))
+    q.update_candidate(cid, status="approved", post_id=png_post)
+    ok_post = q.add("c2", ["https://i.ibb.co/def/card.jpg"], datetime.now(timezone.utc) + timedelta(hours=2))
+    shown = []
+    monkeypatch.setattr(bot, "_send_review", lambda cfg, tg_, cid_, item, draft_, breaking=False, reuse=False: shown.append((cid_, reuse)))
+    assert bot.migrate_png_posts(make_cfg(), q, tg) == 1
+    assert q.get_candidate(cid)["status"] == "proposed"                        # 다시 승인할 수 있게 되돌림
+    assert {p.id: p.status for p in q.list()} == {png_post: "failed", ok_post: "pending"}   # JPEG 글은 그대로
+    assert shown == [(cid, True)] and any("PNG" in m for m in tg.sent)         # 같은 사진으로 카드를 다시 보냄
+    assert bot.migrate_png_posts(make_cfg(), q, tg) == 0                       # 다시 돌려도 안전
+
+
+# ---------- 보완 5: 게시 없는 발행 점검 ----------
+def test_ig_testimage_creates_container_but_never_publishes(monkeypatch, capsys):
+    from insta_agent import cli
+    from insta_agent.cards import render_card
+    from insta_agent.instagram import InstagramClient
+
+    font = _font()
+    if not font:
+        pytest.skip("한글 폰트 없음")
+    monkeypatch.setattr("insta_agent.instagram.time.sleep", lambda s: None)
+    seq = _Seq(_Resp(200, {"id": "container1"}), _Resp(200, {"status_code": "IN_PROGRESS"}), _Resp(200, {"status_code": "FINISHED"}))
+    ig = InstagramClient(make_cfg(ig_access_token="IGAAx"), session=seq)
+    uploaded = []
+    out = cli.ig_testimage(
+        make_cfg(), ig,
+        upload=lambda cfg, path: uploaded.append(open(path, "rb").read(3)) or "https://i.ibb.co/t.jpg",
+        render=lambda draft, tmp, _font_path: render_card(draft, tmp, font),
+    )
+    assert out == "container1" and uploaded == [b"\xff\xd8\xff"]        # 올린 파일은 JPEG
+    assert [name for _, name in seq.calls] == ["media", "container1", "container1"]
+    assert "media_publish" not in [name for _, name in seq.calls]          # 게시 호출은 절대 없음
+    text = capsys.readouterr().out
+    assert "게시는 하지 않았고" in text and "https://i.ibb.co/t.jpg" in text

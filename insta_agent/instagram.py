@@ -153,6 +153,12 @@ class InstagramClient:
                 e.ambiguous = True
             raise
 
+    def test_image_container(self, image_url: str) -> str:
+        """게시하지 않고 인스타가 이 이미지 주소를 받아들이는지만 확인한다(컨테이너 생성 + 상태 확인, 발행 호출 없음)."""
+        container = self._create_container(image_url=image_url)
+        self._wait_ready(container)
+        return container
+
     def publish_image(self, image_url: str, caption: str) -> str:
         return self._publish(self._create_container(image_url=image_url, caption=caption))
 
