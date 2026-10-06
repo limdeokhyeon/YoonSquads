@@ -514,12 +514,10 @@ def test_recent_styles_and_prompt_avoid_repeats(monkeypatch):
     assert "정치" not in d.hashtags and d.hashtags[-1] == "나우이슈"
 
 
-def test_unsplash_search_relaxes_until_a_photo_is_found(tmp_path):
+def test_unsplash_search_tries_portrait_then_any_then_next_queries_with_a_cap(tmp_path):
     from insta_agent.stock import fetch_unsplash
 
     searches = []
-    photo = {"urls": {"raw": "https://images.unsplash.com/p?ixid=1"}, "links": {"download_location": "https://api.unsplash.com/photos/1/download"},
-             "user": {"name": "J", "links": {"html": "https://unsplash.com/@j"}}}
 
     class R:
         content = b"IMG"
@@ -531,12 +529,13 @@ def test_unsplash_search_relaxes_until_a_photo_is_found(tmp_path):
         def get(self, url, headers=None, params=None, timeout=None):
             if "search/photos" in url:
                 searches.append((params["query"], params.get("orientation")))
-                return R([photo] if params["query"] == "stock exchange" and "orientation" not in params else [])
-            return R()
+            return R([])
 
-    credit, _, _ = fetch_unsplash(make_cfg(unsplash_key="k"), "stock exchange trading floor", str(tmp_path / "bg.png"), http=H())
-    assert searches == [("stock exchange trading floor", "portrait"), ("stock exchange trading floor", None), ("stock exchange", None)]
-    assert credit.startswith("J / Unsplash")
+    with pytest.raises(RuntimeError):                 # 끝내 없으면 예외 → 호출한 쪽이 기본 배경으로 계속
+        fetch_unsplash(make_cfg(unsplash_key="k"), "stock exchange trading floor", str(tmp_path / "bg.png"), http=H(),
+                       extra_queries=["bank building", "bond chart screen", "never reached query"])
+    assert searches == [("stock exchange trading floor", "portrait"), ("stock exchange trading floor", None),
+                        ("bank building", None), ("bond chart screen", None)]   # 최대 4번, 한 단어로 줄여 찾지 않음
 
 
 def test_breaking_slot_runs_on_the_hour_inside_window_only():

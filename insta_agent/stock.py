@@ -22,22 +22,29 @@ def _search(cfg: Config, headers: dict, query: str, portrait: bool, http) -> lis
     if portrait:
         params["orientation"] = "portrait"
     resp = http.get(f"{API}/search/photos", headers=headers, params=params, timeout=20)
+    remaining = (getattr(resp, "headers", None) or {}).get("X-Ratelimit-Remaining")
+    if remaining is not None:  # 무료 개발용 키는 시간당 50회라 남은 횟수를 남겨 둔다
+        log.info(f"unsplash: 남은 호출 {remaining}회")
     resp.raise_for_status()
     return resp.json().get("results") or []
 
 
-def _attempts(query: str) -> list[tuple[str, bool]]:
-    """사진을 못 찾을 때를 대비한 검색 순서: 원래 키워드(세로→아무 방향) → 앞 두 단어 → 첫 단어. 최대 4번."""
-    words = (query or "news").split()[:5]
-    out = [(" ".join(words), True), (" ".join(words), False)]
-    if len(words) > 2:
-        out.append((" ".join(words[:2]), False))
-    if len(words) > 1:
-        out.append((words[0], False))
-    return out
+MAX_SEARCHES = 4  # 사진 하나를 고르는 데 쓰는 검색 횟수 상한(시간당 호출 한도 보호)
 
 
-TOP_N = 10  # 검색 결과 상위 몇 장 중에서 무작위로 고를지
+def _attempts(queries: list[str]) -> list[tuple[str, bool]]:
+    """검색 순서: 가장 구체적인 첫 검색어(세로 사진 → 아무 방향) → 두 번째·세 번째 검색어. 최대 MAX_SEARCHES번.
+
+    검색어를 한 단어로 줄이는 단계는 없다(너무 일반적인 사진이 나와 기사와 어긋난다)."""
+    out: list[tuple[str, bool]] = []
+    for i, q in enumerate(queries):
+        if i == 0:
+            out.append((q, True))
+        out.append((q, False))
+    return out[:MAX_SEARCHES]
+
+
+TOP_N = 3  # 검색 결과 상위 몇 장 중에서 무작위로 고를지(넓히면 기사와 어긋난 사진이 섞인다)
 
 
 def fetch_unsplash(
@@ -58,20 +65,25 @@ def fetch_unsplash(
     queries = [q for q in dict.fromkeys([query, *(extra_queries or [])]) if q and q.strip()] or ["news"]
     photo = None
     fallback = None  # 전부 최근에 쓴 사진뿐일 때를 위한 대비책
-    for base in queries:
-        for q, portrait in _attempts(base):
+    tried = []
+    for q, portrait in _attempts([" ".join(q.split()[:5]) for q in queries]):
+        tried.append(q)
+        try:
             results = _search(cfg, headers, q, portrait, http)
-            fresh = [r for r in results if r.get("id") not in exclude]
-            if fresh:
-                photo = rng.choice(fresh[:TOP_N])
-                break
-            if results and fallback is None:
-                fallback = rng.choice(results[:TOP_N])
-        if photo is not None:
+        except Exception as e:
+            log.warning(f"unsplash 검색 실패 query='{q}': {redact(e)}")
+            raise
+        fresh = [r for r in results if r.get("id") not in exclude]
+        if fresh:
+            photo = rng.choice(fresh[:TOP_N])
             break
+        if results and fallback is None:
+            fallback = rng.choice(results[:TOP_N])
     photo = photo or fallback
     if photo is None:
+        log.warning(f"unsplash: 사진 없음 queries={tried}")
         raise RuntimeError(f"Unsplash에서 '{query}' 사진을 찾지 못했습니다")
+    log.info(f"unsplash: query='{tried[-1]}' 사진={photo.get('id')} 검색 {len(tried)}회" + (" (최근 쓴 사진 재사용)" if photo.get("id") in exclude else ""))
     sep = "&" if "?" in photo["urls"]["raw"] else "?"
     img = http.get(f"{photo['urls']['raw']}{sep}w=1080&h=1350&fit=crop&q=80", timeout=60)
     img.raise_for_status()

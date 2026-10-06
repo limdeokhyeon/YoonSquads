@@ -220,6 +220,7 @@ def change_photo(cfg: Config, queue: Queue, tg: Telegram, cid: int) -> None:
     if cfg.photo_source != "unsplash" or not cfg.unsplash_key:
         tg.send("사진 바꾸기는 PHOTO_SOURCE=unsplash 일 때만 쓸 수 있습니다")
         return
+    log.info(f"change_photo: 후보 #{cid}")
     _send_review(cfg, tg, cid, cand["item"], _draft(cand["draft"]), cand.get("kind") == "breaking", reuse=False)
 
 
