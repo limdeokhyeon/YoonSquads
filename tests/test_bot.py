@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -423,7 +424,7 @@ def test_fetch_unsplash_saves_photo_triggers_download_and_returns_credit(tmp_pat
             return R()
 
     out = tmp_path / "bg.png"
-    credit, location = fetch_unsplash(make_cfg(unsplash_key="k"), "missile launch sea", str(out), http=H())
+    credit, location, pid = fetch_unsplash(make_cfg(unsplash_key="k"), "missile launch sea", str(out), http=H())
     assert out.read_bytes() == b"JPEGDATA"
     assert "w=1080&h=1350&fit=crop" in calls[1][0]          # 카드 크기로 잘라 받기
     assert len(calls) == 2                                      # 검색 + 사진 받기뿐, 아직 집계는 호출하지 않는다
@@ -435,10 +436,10 @@ def test_unsplash_credit_goes_into_caption_and_background_is_reused(monkeypatch,
     monkeypatch.chdir(tmp_path)
     fetched = []
 
-    def fake_fetch(cfg, query, path):
+    def fake_fetch(cfg, query, path, **kw):
         fetched.append(query)
         open(path, "wb").write(b"x")
-        return "Jane / Unsplash http://u", "http://dl"
+        return "Jane / Unsplash http://u", "http://dl", "pid1"
 
     seen = []
     monkeypatch.setattr(bot, "fetch_unsplash", fake_fetch)
@@ -468,7 +469,7 @@ def test_unsplash_download_tracked_only_on_approval(monkeypatch, tmp_path):
 
     monkeypatch.chdir(tmp_path)
     tracked = []
-    monkeypatch.setattr(bot, "fetch_unsplash", lambda cfg, q, path: (open(path, "wb").write(b"x") and None) or ("J / Unsplash", "http://dl"))
+    monkeypatch.setattr(bot, "fetch_unsplash", lambda cfg, q, path, **kw: (open(path, "wb").write(b"x") and None) or ("J / Unsplash", "http://dl", "pid"))
     monkeypatch.setattr(bot, "track_download", lambda cfg, loc: tracked.append(loc))
     monkeypatch.setattr(bot, "render_card", lambda *a, **k: "card.png")
     monkeypatch.setattr(bot, "upload_image", lambda cfg, p: "https://img/x")
@@ -533,7 +534,7 @@ def test_unsplash_search_relaxes_until_a_photo_is_found(tmp_path):
                 return R([photo] if params["query"] == "stock exchange" and "orientation" not in params else [])
             return R()
 
-    credit, _ = fetch_unsplash(make_cfg(unsplash_key="k"), "stock exchange trading floor", str(tmp_path / "bg.png"), http=H())
+    credit, _, _ = fetch_unsplash(make_cfg(unsplash_key="k"), "stock exchange trading floor", str(tmp_path / "bg.png"), http=H())
     assert searches == [("stock exchange trading floor", "portrait"), ("stock exchange trading floor", None), ("stock exchange", None)]
     assert credit.startswith("J / Unsplash")
 
@@ -1084,3 +1085,81 @@ def test_caption_has_no_news_source_line_but_keeps_photo_credit():
     assert "출처:" not in text and "뉴시스" not in text and "n.news.naver.com" not in text   # 기사 출처 줄 삭제
     assert "사진: Asher Legg / Unsplash" in text                                            # 사진 줄은 (미정이라) 그대로
     assert text.endswith("#안보 #북한")
+
+
+# --- 이미지 다양화: 제외 목록 / 무작위 / 검색어 3개 / 다른 사진 버튼 ---
+def _photo(pid):
+    return {"id": pid, "urls": {"raw": f"https://img/{pid}"}, "links": {"download_location": f"https://dl/{pid}"},
+            "user": {"name": pid, "links": {"html": "https://u/" + pid}}}
+
+
+class _Http:
+    def __init__(self, by_query):
+        self.by_query, self.queries = by_query, []
+
+    def get(self, url, headers=None, params=None, timeout=None):
+        class R:
+            content = b"IMG"
+            def raise_for_status(self): pass
+        r = R()
+        if "search/photos" in url:
+            self.queries.append(params["query"])
+            r.json = lambda res=self.by_query.get(params["query"], []): {"results": res}
+        return r
+
+
+def test_unsplash_skips_recent_photos_and_picks_among_top(tmp_path):
+    import random
+    from insta_agent.stock import fetch_unsplash
+
+    photos = [_photo(f"p{i}") for i in range(5)]
+    http = _Http({"bank atm": photos})
+    seen = set()
+    for seed in range(40):
+        _, _, pid = fetch_unsplash(make_cfg(unsplash_key="k"), "bank atm", str(tmp_path / "b.png"), http=http,
+                                   exclude={"p0", "p1"}, rng=random.Random(seed))
+        seen.add(pid)
+    assert seen <= {"p2", "p3", "p4"} and len(seen) > 1   # 제외한 사진은 안 나오고, 매번 같은 사진도 아님
+
+
+def test_unsplash_uses_next_query_when_first_is_all_recent_and_falls_back_if_nothing_else(tmp_path):
+    from insta_agent.stock import fetch_unsplash
+
+    http = _Http({"a": [_photo("p0")], "b": [_photo("p9")]})
+    _, _, pid = fetch_unsplash(make_cfg(unsplash_key="k"), "a", str(tmp_path / "x.png"), http=http, exclude={"p0"}, extra_queries=["b"])
+    assert pid == "p9"                                       # 두 번째 검색어에서 새 사진을 찾는다
+    http = _Http({"a": [_photo("p0")]})
+    _, _, pid = fetch_unsplash(make_cfg(unsplash_key="k"), "a", str(tmp_path / "x.png"), http=http, exclude={"p0"})
+    assert pid == "p0"                                       # 새 사진이 전혀 없으면 실패 대신 재사용
+
+
+def test_parse_news_draft_reads_three_photo_queries_and_old_single_query():
+    from insta_agent.content import parse_news_draft
+
+    base = {"headline": "h", "bullets": ["b"], "caption": "c", "hashtags": ["a"]}
+    d = parse_news_draft(json.dumps({**base, "photo_queries": ["x y", "z", " ", "w"]}), "l")
+    assert d.photo_queries == ["x y", "z", "w"] and d.photo_query == "x y"
+    d = parse_news_draft(json.dumps({**base, "photo_query": "old q"}), "l")
+    assert d.photo_queries == ["old q"] and d.photo_query == "old q"
+
+
+def test_change_photo_picks_new_photo_and_used_ids_are_remembered(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    ids = iter(["p1", "p2"])
+    excludes = []
+
+    def fake_fetch(cfg, query, path, exclude=None, **kw):
+        excludes.append(set(exclude))
+        open(path, "wb").write(b"x")
+        return "J / Unsplash", "http://dl", next(ids)
+
+    monkeypatch.setattr(bot, "fetch_unsplash", fake_fetch)
+    monkeypatch.setattr(bot, "render_card", lambda *a, **k: "card.png")
+    monkeypatch.setattr(bot, "_send_review", lambda *a, **k: None)
+    cfg = make_cfg(photo_source="unsplash", unsplash_key="k")
+    q, tg = Queue(":memory:"), FakeTG()
+    cid = q.add_candidate({"title": "t", "summary": "s", "link": "l", "pub_date": ""}, NewsDraft("h", ["b"], "c", [], "l", photo_query="q").__dict__)
+    bot.make_cards(cfg, cid, NewsDraft("h", ["b"], "c", [], "l", photo_query="q"))
+    bot.make_cards(cfg, cid, NewsDraft("h", ["b"], "c", [], "l", photo_query="q"), reuse=False)  # '다른 사진'과 같은 경로
+    assert excludes == [set(), {"p1"}]                          # 방금 쓴 사진은 두 번째 선택에서 제외됨
+    assert bot._used_photos() == {"p1", "p2"}

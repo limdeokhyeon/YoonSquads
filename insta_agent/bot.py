@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -59,6 +60,35 @@ def _preview_text(cid: int, item: dict, draft: NewsDraft) -> str:
     )
 
 
+PHOTO_AVOID_DAYS = 60
+USED_PHOTOS_FILE = "used_photos.json"
+
+
+def _used_photos(days: int = PHOTO_AVOID_DAYS) -> set[str]:
+    """최근 `days`일 안에 카드 배경으로 쓴 Unsplash 사진 ID. 읽기 실패는 '없음'으로 본다."""
+    try:
+        data = json.load(open(os.path.join(CARD_DIR, USED_PHOTOS_FILE), encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    cutoff = time.time() - days * 86400
+    return {pid for pid, ts in data.items() if isinstance(ts, (int, float)) and ts >= cutoff}
+
+
+def _remember_photo(photo_id: str) -> None:
+    if not photo_id:
+        return
+    path = os.path.join(CARD_DIR, USED_PHOTOS_FILE)
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    cutoff = time.time() - PHOTO_AVOID_DAYS * 86400
+    data = {k: v for k, v in data.items() if isinstance(v, (int, float)) and v >= cutoff}  # 오래된 기록은 정리
+    data[photo_id] = time.time()
+    os.makedirs(CARD_DIR, exist_ok=True)
+    json.dump(data, open(path, "w", encoding="utf-8"))
+
+
 def make_cards(cfg: Config, cid: int, draft: NewsDraft, breaking: bool = False, reuse: bool = False) -> list[str]:
     """뉴스 카드 한 장을 만든다. 배경은 설정(PHOTO_SOURCE)에 따라 AI 이미지/Unsplash 사진/그라데이션.
 
@@ -79,7 +109,10 @@ def make_cards(cfg: Config, cid: int, draft: NewsDraft, breaking: bool = False, 
             if cfg.photo_source == "ai" and cfg.openai_key:
                 generate_background(cfg, draft.image_prompt, bg)
             elif cfg.photo_source == "unsplash" and cfg.unsplash_key:
-                draft.photo_credit, location = fetch_unsplash(cfg, draft.photo_query, bg)
+                draft.photo_credit, location, photo_id = fetch_unsplash(
+                    cfg, draft.photo_query, bg, exclude=_used_photos(), extra_queries=draft.photo_queries,
+                )
+                _remember_photo(photo_id)  # 다음 후보가 같은 사진을 고르지 않도록 고르는 즉시 기록
                 open(credit_file, "w", encoding="utf-8").write(draft.photo_credit)
                 open(dl_file, "w", encoding="utf-8").write(location)
         except Exception as e:
@@ -93,7 +126,8 @@ def _send_review(cfg: Config, tg: Telegram, cid: int, item: dict, draft: NewsDra
     tg.send_photo(paths[0], f"#{cid} 카드")
     tg.send(
         ("🚨 속보 후보\n" if breaking else "") + _preview_text(cid, item, draft),
-        [("✅ 승인", f"ok:{cid}"), ("🔄 다시 쓰기", f"re:{cid}"), ("❌ 폐기", f"no:{cid}")],
+        [("✅ 승인", f"ok:{cid}"), ("🔄 다시 쓰기", f"re:{cid}"), ("❌ 폐기", f"no:{cid}")]
+        + ([("🖼 다른 사진", f"ph:{cid}")] if cfg.photo_source == "unsplash" and cfg.unsplash_key else []),
     )
 
 
@@ -177,6 +211,18 @@ def regenerate(cfg: Config, queue: Queue, tg: Telegram, cid: int, feedback: str 
     _send_review(cfg, tg, cid, cand["item"], draft)
 
 
+def change_photo(cfg: Config, queue: Queue, tg: Telegram, cid: int) -> None:
+    """글은 그대로 두고 배경 사진만 새로 고른다(방금 쓴 사진은 제외 목록에 있어 다시 나오지 않는다)."""
+    cand = queue.get_candidate(cid)
+    if not cand or cand["status"] != "proposed":
+        tg.send("이미 처리된 후보입니다")
+        return
+    if cfg.photo_source != "unsplash" or not cfg.unsplash_key:
+        tg.send("사진 바꾸기는 PHOTO_SOURCE=unsplash 일 때만 쓸 수 있습니다")
+        return
+    _send_review(cfg, tg, cid, cand["item"], _draft(cand["draft"]), cand.get("kind") == "breaking", reuse=False)
+
+
 def _ack(tg: Telegram, callback_id: str, text: str = "") -> None:
     """버튼 응답. 너무 늦어 실패해도(query is too old) 본 작업은 계속하도록 오류를 삼킨다."""
     try:
@@ -224,6 +270,9 @@ def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None
             elif action == "re":
                 _ack(tg, cb["id"], "다시 쓰는 중…")
                 regenerate(cfg, queue, tg, cid)
+            elif action == "ph":
+                _ack(tg, cb["id"], "다른 사진을 고르는 중…")
+                change_photo(cfg, queue, tg, cid)
             elif action == "rt":  # 여기서 cid 는 후보가 아니라 예약 글(post)의 번호
                 _ack(tg, cb["id"], "다시 시도합니다" if queue.requeue(cid) else "이미 처리된 글입니다")
             return
@@ -245,7 +294,7 @@ def handle_update(cfg: Config, queue: Queue, tg: Telegram, update: dict) -> None
                 "명령어\n/collect — 지금 뉴스 수집\n/clear — 검토 대기 후보 모두 폐기\n/report — 최근 7일 발행 성과\n\n"
                 "AI로 다시 쓰기: 수정 3 더 짧게\n"
                 "직접 고치기(번호는 후보 번호):\n  캡션 3 새 캡션 내용\n  제목 3 새 제목\n  부제 3 새 부제\n  배지 3 단독\n  태그 3 정치 예산 국회\n"
-                "버튼: 승인 / 다시 쓰기 / 폐기"
+                "버튼: 승인 / 다시 쓰기 / 폐기 / 다른 사진(글은 그대로, 배경만 교체)"
             )
     except Exception as e:
         tg.send(f"⚠️ 처리 중 오류: {redact(e)}")

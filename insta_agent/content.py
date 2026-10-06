@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import anthropic
 
@@ -105,9 +105,9 @@ NEWS_SYSTEM = """당신은 인스타그램 뉴스 카드 에디터입니다.
 - '최근 사용한 해시태그'와 '최근 캡션 첫 줄'이 주어지면 같은 태그·비슷한 시작 문장·같은 행동 유도 문구를 피할 것
 - 정치·시사 기사는 중립을 지킬 것: 특정 정당·인물·진영을 편들거나 비난하는 표현, 추측·단정, 선동적 표현 금지. 기사에 나온 사실과 각 측의 입장을 구분해 서술
 - 의료·건강·투자 관련 내용은 단정하지 말고 전문가 확인을 권하는 톤 유지
-- photo_query: 무료 사진 사이트 검색용 영어 키워드 2~3개(예: "missile launch sea", "bank atm night"). 사람·얼굴이 주가 되는 검색어는 피하고 사물·건물·풍경 위주
+- photo_queries: 무료 사진 사이트 검색용 영어 키워드 묶음 3개. 서로 다른 각도(예: 장소/건물, 사물, 분위기·상징)로 달라야 하고 각각 2~3단어(예: "missile launch sea", "bank atm night"). 사람·얼굴이 주가 되는 검색어는 피하고 사물·건물·풍경 위주
 - image_prompt: 카드 배경 사진용 영어 설명 한 문장. 기사 주제를 보여 주는 사실적인 장면(사건 현장, 건물, 사물, 풍경, 기관 외관 등)으로, 위쪽 2/3에 피사체가 오고 아래쪽은 비교적 어둡고 단순하게. 기사에 실명 인물이 나오면 그 사람을 그리지 말고 연단과 마이크, 빈 의자, 건물, 깃발, 실루엣 같은 상징 장면으로 대신할 것. 글자·간판·로고·얼굴은 넣지 말 것
-반드시 JSON만 출력: {"badge": str, "kicker": str, "headline": str, "subhead": str, "bullets": [str], "caption": str, "hashtags": [str], "photo_query": str, "image_prompt": str}"""
+반드시 JSON만 출력: {"badge": str, "kicker": str, "headline": str, "subhead": str, "bullets": [str], "caption": str, "hashtags": [str], "photo_queries": [str], "image_prompt": str}"""
 
 
 @dataclass
@@ -123,6 +123,7 @@ class NewsDraft:
     subhead: str = ""
     source_name: str = ""
     photo_query: str = ""
+    photo_queries: list = field(default_factory=list)
     photo_credit: str = ""
 
     def full_text(self) -> str:
@@ -161,10 +162,14 @@ def parse_news_draft(raw: str, source_link: str, source_name: str = "") -> NewsD
     bullets = [str(b).strip() for b in d["bullets"] if str(b).strip()][:4]
     if not bullets:
         raise ValueError("bullets가 비어 있습니다")
+    queries = [str(q).strip() for q in (d.get("photo_queries") or []) if str(q).strip()][:3]
+    if not queries and str(d.get("photo_query", "")).strip():  # 옛 형식 응답도 받아 준다
+        queries = [str(d["photo_query"]).strip()]
     return NewsDraft(
         str(d["headline"]).strip(), bullets, base.caption, base.hashtags, source_link,
         image_prompt=str(d.get("image_prompt", "")).strip(), badge=str(d.get("badge", "")).strip(),
-        kicker=str(d.get("kicker", "")).strip(), subhead=str(d.get("subhead", "")).strip(), source_name=source_name, photo_query=str(d.get("photo_query", "")).strip(),
+        kicker=str(d.get("kicker", "")).strip(), subhead=str(d.get("subhead", "")).strip(), source_name=source_name, photo_query=queries[0] if queries else "",
+        photo_queries=queries,
     )
 
 
