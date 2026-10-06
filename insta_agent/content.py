@@ -126,16 +126,17 @@ class NewsDraft:
     photo_credit: str = ""
 
     def full_text(self) -> str:
-        """인스타 캡션(최대 2,200자). 길면 본문을 줄이고, 그래도 넘치면 핵심 줄을 빼서 해시태그와 출처는 지킨다."""
+        """인스타 캡션(최대 2,200자) = 본문 + 핵심 줄 + (사진 출처) + 해시태그. 기사 출처 줄은 넣지 않는다(카드 이미지에 언론사가 표시됨).
+
+        길면 본문을 줄이고, 그래도 넘치면 핵심 줄을 빼서 해시태그와 사진 출처는 지킨다."""
         tags = " ".join(f"#{t}" for t in self.hashtags)
         points = "\n".join(f"• {b}" for b in self.bullets)
-        credit = f"\n사진: {self.photo_credit}" if self.photo_credit else ""
-        source = f"출처: {self.source_name or '기사 원문'} {self.source_link}{credit}"
-        tail = f"\n\n{points}\n\n{source}\n\n{tags}"
+        credit = f"사진: {self.photo_credit}\n\n" if self.photo_credit else ""
+        tail = f"\n\n{points}\n\n{credit}{tags}"
         caption = self.caption
         if len(caption) + len(tail) > CAPTION_LIMIT:
             if CAPTION_LIMIT - len(tail) < 80:  # 본문 자리가 거의 없으면 핵심 줄을 빼고 본문을 살린다
-                tail = f"\n\n{source}\n\n{tags}"
+                tail = f"\n\n{credit}{tags}"
             budget = CAPTION_LIMIT - len(tail)
             caption = caption[: max(budget - 1, 0)].rstrip() + "…" if budget > 1 else ""
         return (caption + tail).strip()[:CAPTION_LIMIT]

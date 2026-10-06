@@ -48,7 +48,7 @@ def test_collect_alternates_keywords_and_dedupes(monkeypatch):
 
 def test_parse_news_draft():
     d = parse_news_draft('{"headline":"제목","bullets":["가","나"],"caption":"본문","hashtags":["#x"]}', "http://l")
-    assert d.hashtags == ["x"] and "출처: 기사 원문 http://l" in d.full_text()
+    assert d.hashtags == ["x"] and "출처" not in d.full_text() and "http://l" not in d.full_text()   # 기사 출처 줄은 캡션에 넣지 않음
     with pytest.raises(ValueError):
         parse_news_draft('{"headline":"t","bullets":[],"caption":"c"}', "l")
 
@@ -393,7 +393,8 @@ def test_news_draft_new_fields_and_full_text():
     )
     assert (d.badge, d.kicker, d.subhead, d.source_name) == ("단독", "금융보안원", "AI 도구 흔적", "헤럴드경제")
     txt = d.full_text()
-    assert "• 가" in txt and "출처: 헤럴드경제 http://l" in txt
+    assert "• 가" in txt and "출처" not in txt and "http://l" not in txt     # 캡션에는 출처 줄이 없음(언론사는 카드 이미지에 표시)
+    assert d.source_name == "헤럴드경제" and d.source_link == "http://l"      # 카드·검토용 정보는 그대로 보관
 
 
 def test_old_stored_draft_without_new_fields_still_loads():
@@ -971,10 +972,10 @@ def test_full_text_never_exceeds_instagram_caption_limit():
     d = NewsDraft("h", ["가" * 45] * 4, "본문" * 1500, ["태그%d" % i for i in range(9)], link, source_name="연합뉴스", photo_credit=credit)
     text = d.full_text()
     assert len(text) <= CAPTION_LIMIT
-    assert "…" in text and "#태그8" in text and link in text and "Jane Doe" in text   # 본문만 줄고 태그·출처는 유지
+    assert "…" in text and "#태그8" in text and "Jane Doe" in text and link not in text   # 본문만 줄고 태그·사진 출처는 유지, 기사 출처 줄 없음
     # 짧은 글은 그대로
     short = NewsDraft("h", ["가"], "짧은 본문", ["a"], link, source_name="KBS")
-    assert short.full_text() == f"짧은 본문\n\n• 가\n\n출처: KBS {link}\n\n#a"
+    assert short.full_text() == "짧은 본문\n\n• 가\n\n#a"                    # 본문 + 핵심 줄 + 해시태그뿐
     # 본문 자리가 거의 없을 만큼 꽉 차면 핵심 줄을 빼고 본문을 살린다
     tight = NewsDraft("h", ["가" * 200] * 4, "본문" * 300, ["태그%d" % i for i in range(8)], link, source_name="연합뉴스", photo_credit=credit)
     out = tight.full_text()
@@ -1073,3 +1074,13 @@ def test_ig_testimage_creates_container_but_never_publishes(monkeypatch, capsys)
     assert "media_publish" not in [name for _, name in seq.calls]          # 게시 호출은 절대 없음
     text = capsys.readouterr().out
     assert "게시는 하지 않았고" in text and "https://i.ibb.co/t.jpg" in text
+
+
+def test_caption_has_no_news_source_line_but_keeps_photo_credit():
+    link = "https://n.news.naver.com/mnews/article/003/0014234464?sid=100"
+    d = NewsDraft("h", ["구체적인 내용은 후속 기사에서 확인 필요"], "본문", ["안보", "북한"], link, source_name="뉴시스",
+                  photo_credit="Asher Legg / Unsplash https://unsplash.com/@leggie02?utm_source=a")
+    text = d.full_text()
+    assert "출처:" not in text and "뉴시스" not in text and "n.news.naver.com" not in text   # 기사 출처 줄 삭제
+    assert "사진: Asher Legg / Unsplash" in text                                            # 사진 줄은 (미정이라) 그대로
+    assert text.endswith("#안보 #북한")
